@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { BrainLogo } from "@/components/brain-logo";
@@ -10,6 +11,7 @@ export default function LoginPage() {
   const { signInWithEmail, signInWithGoogle, resetPassword, isAuthenticated } = useAuth();
   const { resolvedTheme, toggleTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
+  const router = useRouter();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,10 +21,21 @@ export default function LoginPage() {
   const [resetSent, setResetSent] = useState(false);
   const [showForgot, setShowForgot] = useState(false);
 
-  // Redirect if already authenticated
+  useEffect(() => {
+    if (isAuthenticated) router.replace("/diary");
+  }, [isAuthenticated, router]);
+
   if (isAuthenticated) {
-    if (typeof window !== "undefined") window.location.href = "/diary";
-    return null;
+    return (
+      <div className="auth-canvas flex min-h-dvh items-center justify-center px-4">
+        <div className="enterprise-card w-full max-w-sm p-6 text-center" role="status">
+          <div className="skeleton-line mx-auto h-3 w-32" />
+          <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-300">
+            Opening your diary…
+          </p>
+        </div>
+      </div>
+    );
   }
 
   const handleEmailLogin = async (e: React.FormEvent) => {
@@ -63,9 +76,9 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#f6f8fb] dark:bg-slate-950">
+    <div className="auth-canvas flex min-h-dvh flex-col">
       {/* Minimal header */}
-      <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
+      <header className="border-b border-slate-200/90 bg-white/80 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/80">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-6">
           <BrainLogo size="sm" variant="badge" showText={true} href="/" />
           <button
@@ -87,7 +100,7 @@ export default function LoginPage() {
       </header>
 
       {/* Main content */}
-      <div className="flex flex-1 items-center justify-center px-4 py-12">
+      <main className="flex flex-1 items-center justify-center px-4 py-8 sm:py-12">
         <div className="w-full max-w-md">
           {/* Logo & title */}
           <div className="mb-8 text-center">
@@ -121,7 +134,7 @@ export default function LoginPage() {
             </button>
 
             {error && (
-              <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-400">
+              <div id="login-error" role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-400">
                 {error}
               </div>
             )}
@@ -135,9 +148,9 @@ export default function LoginPage() {
 
             {showForgot ? (
               /* Forgot password form */
-              <form onSubmit={handleForgotPassword} className="space-y-4">
+              <form onSubmit={handleForgotPassword} className="space-y-4" aria-describedby={error ? "login-error" : undefined}>
                 {resetSent ? (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-center dark:border-emerald-700 dark:bg-emerald-900/20">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-center dark:border-emerald-700 dark:bg-emerald-900/20" role="status">
                     <svg className="mx-auto h-8 w-8 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                     </svg>
@@ -163,11 +176,6 @@ export default function LoginPage() {
                         placeholder="you@example.com"
                       />
                     </div>
-                    {error && (
-                      <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-400">
-                        {error}
-                      </div>
-                    )}
                     <button
                       type="submit"
                       disabled={isSubmitting || !email.trim()}
@@ -187,7 +195,7 @@ export default function LoginPage() {
               </form>
             ) : (
               /* Email login form */
-              <form onSubmit={handleEmailLogin} className="space-y-4">
+              <form onSubmit={handleEmailLogin} className="space-y-4" aria-describedby={error ? "login-error" : undefined}>
                 <div>
                   <label htmlFor="login-email" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
                     Email address
@@ -249,12 +257,6 @@ export default function LoginPage() {
                   </div>
                 </div>
 
-                {error && (
-                  <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-400">
-                    {error}
-                  </div>
-                )}
-
                 <button
                   type="submit"
                   disabled={isSubmitting || !email.trim() || !password}
@@ -274,7 +276,7 @@ export default function LoginPage() {
             </Link>
           </p>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

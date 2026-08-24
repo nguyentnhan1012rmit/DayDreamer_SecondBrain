@@ -98,7 +98,8 @@ function MiniCalendar({
         <button
           type="button"
           onClick={prevMonth}
-          className="cursor-pointer rounded-lg p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+          className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+          aria-label="View previous month"
         >
           <ChevronLeft className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -108,7 +109,8 @@ function MiniCalendar({
         <button
           type="button"
           onClick={nextMonth}
-          className="cursor-pointer rounded-lg p-1 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+          className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+          aria-label="View next month"
         >
           <ChevronRight className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -135,6 +137,10 @@ function MiniCalendar({
           const hasEntry = entryDates.has(dateKey);
           const isSelected = selectedDate === dateKey;
           const isToday = dateKey === todayKey;
+          const fullDateLabel = new Date(year, month, day).toLocaleDateString(
+            "default",
+            { weekday: "long", month: "long", day: "numeric", year: "numeric" },
+          );
 
           return (
             <button
@@ -144,6 +150,9 @@ function MiniCalendar({
                 onSelect(isSelected ? null : hasEntry ? dateKey : null)
               }
               disabled={!hasEntry}
+              aria-label={`${fullDateLabel}${hasEntry ? ", has diary entries" : ", no diary entries"}`}
+              aria-pressed={hasEntry ? isSelected : undefined}
+              aria-current={isToday ? "date" : undefined}
               className={`relative mx-auto flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-xs font-medium transition
                 ${
                   isSelected
@@ -157,7 +166,7 @@ function MiniCalendar({
             >
               {day}
               {hasEntry && !isSelected && (
-                <span className="absolute bottom-0.5 left-1/2 h-1 w-3 -translate-x-1/2 rounded-full bg-indigo-500 dark:bg-indigo-400" />
+                <span className="absolute bottom-0.5 left-1/2 h-1 w-3 -translate-x-1/2 rounded-full bg-indigo-500 dark:bg-indigo-400" aria-hidden="true" />
               )}
             </button>
           );
@@ -169,7 +178,7 @@ function MiniCalendar({
         <button
           type="button"
           onClick={() => onSelect(null)}
-          className="mt-3 w-full cursor-pointer rounded-lg border border-slate-200 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-slate-50 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-700"
+          className="mt-3 min-h-10 w-full cursor-pointer rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-700"
         >
           Show all entries
         </button>

@@ -1,10 +1,28 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import type { DiaryMood } from "@/lib/api-client";
 import { MOOD_OPTIONS } from "@/lib/mood-meta";
+
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+const subscribeToClientMount = () => () => undefined;
 
 function normalizeTag(value: string) {
   return value
@@ -26,6 +44,19 @@ type EditDiaryModalProps = {
   onCancel: () => void;
 };
 
+type EditDiaryModalContentProps = {
+  initialTitle: string;
+  initialContent: string;
+  initialMood: DiaryMood;
+  initialTags: string[];
+  isLoading: boolean;
+  onSave: EditDiaryModalProps["onSave"];
+  onCancel: EditDiaryModalProps["onCancel"];
+  dialogRef: RefObject<HTMLDivElement | null>;
+  titleInputRef: RefObject<HTMLInputElement | null>;
+  titleId: string;
+};
+
 export function EditDiaryModal({
   isOpen,
   initialTitle,
@@ -36,39 +67,144 @@ export function EditDiaryModal({
   onSave,
   onCancel,
 }: EditDiaryModalProps) {
-  const [title, setTitle] = useState(initialTitle);
-  const [content, setContent] = useState(initialContent);
-  const [mood, setMood] = useState<DiaryMood>(initialMood ?? "neutral");
-  const [tags, setTags] = useState<string[]>(initialTags);
-  const [tagInput, setTagInput] = useState("");
-  const [mounted, setMounted] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
+  const titleId = useId();
+  const mounted = useSyncExternalStore(
+    subscribeToClientMount,
+    () => true,
+    () => false,
+  );
 
   useEffect(() => {
-    setMounted(true);
-  }, []);
+    if (!isOpen || !mounted) return;
 
-  // Sync with external state when modal opens
-  useEffect(() => {
-    if (isOpen) {
-      setTitle(initialTitle);
-      setContent(initialContent);
-      setMood(initialMood ?? "neutral");
-      setTags(initialTags);
-      setTagInput("");
-    }
-  }, [isOpen, initialTitle, initialContent, initialMood, initialTags]);
+    previouslyFocusedElementRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
 
-  // Close on Escape
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !isLoading) onCancel();
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (titleInputRef.current && !titleInputRef.current.disabled) {
+        titleInputRef.current.focus();
+        titleInputRef.current.select();
+      } else {
+        dialogRef.current?.focus();
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.body.style.overflow = previousBodyOverflow;
+
+      const previouslyFocusedElement = previouslyFocusedElementRef.current;
+      previouslyFocusedElementRef.current = null;
+      if (previouslyFocusedElement?.isConnected) {
+        window.requestAnimationFrame(() => previouslyFocusedElement.focus());
+      }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isLoading, onCancel]);
+  }, [isOpen, mounted]);
+
+  useEffect(() => {
+    if (!isOpen || !mounted) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (isLoading) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+
+      const focusableElements = Array.from(
+        dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      ).filter(
+        (element) =>
+          element.getAttribute("aria-hidden") !== "true" &&
+          !element.hasAttribute("hidden"),
+      );
+
+      if (!focusableElements.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      const activeElement = document.activeElement;
+
+      if (
+        event.shiftKey &&
+        (activeElement === firstElement || !dialog.contains(activeElement))
+      ) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (
+        !event.shiftKey &&
+        (activeElement === lastElement || !dialog.contains(activeElement))
+      ) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, isLoading, mounted, onCancel]);
 
   if (!isOpen || !mounted) return null;
+
+  return createPortal(
+    <EditDiaryModalContent
+      key={JSON.stringify([
+        initialTitle,
+        initialContent,
+        initialMood,
+        initialTags,
+      ])}
+      initialTitle={initialTitle}
+      initialContent={initialContent}
+      initialMood={initialMood ?? "neutral"}
+      initialTags={initialTags}
+      isLoading={isLoading}
+      onSave={onSave}
+      onCancel={onCancel}
+      dialogRef={dialogRef}
+      titleInputRef={titleInputRef}
+      titleId={titleId}
+    />,
+    document.body,
+  );
+}
+
+function EditDiaryModalContent({
+  initialTitle,
+  initialContent,
+  initialMood,
+  initialTags,
+  isLoading,
+  onSave,
+  onCancel,
+  dialogRef,
+  titleInputRef,
+  titleId,
+}: EditDiaryModalContentProps) {
+  const [title, setTitle] = useState(initialTitle);
+  const [content, setContent] = useState(initialContent);
+  const [mood, setMood] = useState<DiaryMood>(initialMood);
+  const [tags, setTags] = useState<string[]>(initialTags);
+  const [tagInput, setTagInput] = useState("");
 
   const canSave = title.trim().length > 0 && content.trim().length > 0;
 
@@ -98,25 +234,41 @@ export function EditDiaryModal({
     }
   }
 
-  return createPortal(
+  return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-        onClick={() => { if (!isLoading) onCancel(); }}
+        onClick={() => {
+          if (!isLoading) onCancel();
+        }}
+        aria-hidden="true"
       />
 
       {/* Modal */}
-      <div className="animate-modal-in relative max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-800">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-busy={isLoading}
+        tabIndex={-1}
+        className="animate-modal-in relative max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-800"
+      >
         {/* Header */}
         <div className="mb-5 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">Edit Diary Entry</h3>
+          <h3
+            id={titleId}
+            className="text-lg font-bold text-slate-900 dark:text-slate-100"
+          >
+            Edit Diary Entry
+          </h3>
           <button
             type="button"
             onClick={onCancel}
             disabled={isLoading}
-            className="cursor-pointer rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
-            aria-label="Close edit dialog"
+            className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-700 dark:hover:text-slate-300 dark:focus-visible:ring-indigo-400 dark:focus-visible:ring-offset-slate-800"
+            aria-label="Close edit diary dialog"
           >
             <X className="h-5 w-5" aria-hidden="true" />
           </button>
@@ -129,6 +281,7 @@ export function EditDiaryModal({
               Title
             </label>
             <input
+              ref={titleInputRef}
               id="edit-title"
               type="text"
               value={title}
@@ -240,7 +393,6 @@ export function EditDiaryModal({
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
 }

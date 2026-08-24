@@ -872,10 +872,10 @@ export function DiaryInputForm() {
   }
 
   return (
-    <div className="w-full">
-      <form className="enterprise-card space-y-4 p-5" onSubmit={onSubmit}>
+    <div className="mx-auto w-full max-w-6xl">
+      <form className="enterprise-card space-y-5 p-4 sm:p-5" onSubmit={onSubmit}>
         <div
-          className="grid grid-cols-4 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-900"
+          className="grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1.5 dark:bg-slate-900"
           role="group"
           aria-label="Capture mode"
         >
@@ -894,15 +894,14 @@ export function DiaryInputForm() {
                   setCaptureMode(mode.value);
                   setRecordingError("");
                 }}
-                className={`flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg px-2 text-sm font-semibold transition ${
+                className={`flex min-h-14 cursor-pointer flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:px-2 sm:text-sm ${
                   isActive
                     ? "bg-white text-slate-950 shadow-sm dark:bg-slate-800 dark:text-white"
                     : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
                 } ${isRecording && mode.value !== "record" ? "cursor-not-allowed opacity-50" : ""}`}
               >
                 <ModeIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span className="hidden sm:inline">{mode.label}</span>
-                <span className="sr-only sm:hidden">{mode.label}</span>
+                <span>{mode.label}</span>
               </button>
             );
           })}
@@ -918,7 +917,6 @@ export function DiaryInputForm() {
             </label>
             <input
               id="title"
-              autoFocus
               className="w-full rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-indigo-500 dark:focus:ring-indigo-900/40"
               placeholder="What happened today?"
               value={draft.title}

@@ -1359,6 +1359,9 @@ export default function SearchPage() {
 
       setIsSearching(true);
       setError(null);
+      // Clear the previous answer and citations together so stale evidence is
+      // never presented as if it belongs to the new question.
+      setResult(null);
 
       try {
         const activeScope =
@@ -1427,6 +1430,7 @@ export default function SearchPage() {
             today.queries += 1;
             stored[todayKey] = today;
             localStorage.setItem("dd-token-usage", JSON.stringify(stored));
+            window.dispatchEvent(new Event("daydreamer-token-usage-change"));
           } catch {
             /* ignore localStorage errors */
           }
@@ -1717,7 +1721,11 @@ export default function SearchPage() {
           </form>
         </section>
 
-        <section className="enterprise-card p-5">
+        <section
+          className="enterprise-card p-5"
+          aria-live="polite"
+          aria-busy={isSearching}
+        >
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <p className="flex items-center gap-2 text-xs font-semibold text-indigo-600 dark:text-indigo-300">
@@ -2065,7 +2073,8 @@ export default function SearchPage() {
                       event.stopPropagation();
                       handleDeleteHistoryItem(item.id);
                     }}
-                    className="ml-2 shrink-0 cursor-pointer p-1 text-slate-400 opacity-0 transition hover:text-rose-500 group-hover:opacity-100 dark:text-slate-500 dark:hover:text-rose-400"
+                    className="ml-2 flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg text-slate-400 opacity-100 transition hover:bg-rose-50 hover:text-rose-600 focus-visible:opacity-100 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100 dark:text-slate-500 dark:hover:bg-rose-950/30 dark:hover:text-rose-400"
+                    aria-label={`Delete search: ${item.question}`}
                     title="Delete item"
                   >
                     <svg

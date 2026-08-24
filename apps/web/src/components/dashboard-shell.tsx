@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Image from "next/image";
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   CalendarDays,
   ChartNoAxesColumnIncreasing,
@@ -20,6 +20,7 @@ import {
   Settings,
   Sun,
   UserRound,
+  X,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -128,6 +129,59 @@ const sidebarSections: SidebarSection[] = [
   },
 ];
 
+type TokenStats = { today: number; week: number; queries: number };
+
+let tokenStatsCacheKey = "";
+let tokenStatsCache: TokenStats | null = null;
+
+const subscribeToTokenStats = (onStoreChange: () => void) => {
+  const handleChange = () => onStoreChange();
+  window.addEventListener("storage", handleChange);
+  window.addEventListener("daydreamer-token-usage-change", handleChange);
+  return () => {
+    window.removeEventListener("storage", handleChange);
+    window.removeEventListener("daydreamer-token-usage-change", handleChange);
+  };
+};
+
+const getTokenStatsSnapshot = (): TokenStats | null => {
+  try {
+    const rawValue = localStorage.getItem("dd-token-usage") || "{}";
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const nextCacheKey = `${todayKey}:${rawValue}`;
+    if (nextCacheKey === tokenStatsCacheKey) return tokenStatsCache;
+
+    const stored = JSON.parse(rawValue) as Record<
+      string,
+      { tokens?: number; queries?: number } | undefined
+    >;
+    const todayData = stored[todayKey] || { tokens: 0, queries: 0 };
+    const now = new Date();
+    let weekTokens = 0;
+    for (let index = 0; index < 7; index += 1) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - index);
+      const key = date.toISOString().slice(0, 10);
+      weekTokens += stored[key]?.tokens || 0;
+    }
+
+    tokenStatsCacheKey = nextCacheKey;
+    tokenStatsCache =
+      (todayData.tokens || 0) > 0 || weekTokens > 0
+        ? {
+            today: todayData.tokens || 0,
+            week: weekTokens,
+            queries: todayData.queries || 0,
+          }
+        : null;
+    return tokenStatsCache;
+  } catch {
+    return null;
+  }
+};
+
+const getServerTokenStatsSnapshot = () => null;
+
 // useTheme is now imported from @/contexts/ThemeContext
 
 export function DashboardShell({ children, title, description }: DashboardShellProps) {
@@ -143,26 +197,11 @@ export function DashboardShell({ children, title, description }: DashboardShellP
   const { resolvedTheme, toggleTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
-  // Token usage widget state (Order 2: 3d)
-  const [tokenStats, setTokenStats] = useState<{ today: number; week: number; queries: number } | null>(null);
-  useEffect(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem("dd-token-usage") || "{}");
-      const todayKey = new Date().toISOString().slice(0, 10);
-      const todayData = stored[todayKey] || { tokens: 0, queries: 0 };
-      const now = new Date();
-      let weekTokens = 0;
-      for (let i = 0; i < 7; i++) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().slice(0, 10);
-        weekTokens += (stored[key]?.tokens || 0);
-      }
-      if (todayData.tokens > 0 || weekTokens > 0) {
-        setTokenStats({ today: todayData.tokens, week: weekTokens, queries: todayData.queries });
-      }
-    } catch { /* ignore */ }
-  }, []);
+  const tokenStats = useSyncExternalStore(
+    subscribeToTokenStats,
+    getTokenStatsSnapshot,
+    getServerTokenStatsSnapshot,
+  );
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(min-width: 1024px)");
@@ -228,17 +267,37 @@ export function DashboardShell({ children, title, description }: DashboardShellP
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isDesktopViewport, mobileSidebarOpen]);
 
+  useEffect(() => {
+    if (!openMenu) return;
+
+    const closeAccountMenu = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenMenu(null);
+    };
+
+    document.addEventListener("keydown", closeAccountMenu);
+    return () => document.removeEventListener("keydown", closeAccountMenu);
+  }, [openMenu]);
+
   const avatarUrl: string | undefined =
     user?.user_metadata?.avatar_url ?? user?.user_metadata?.picture ?? undefined;
   const displayName: string = user?.user_metadata?.full_name ?? user?.user_metadata?.name ?? "User";
   const displayEmail: string = user?.email ?? "";
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#f6f8fb] dark:bg-slate-950" onClick={() => setOpenMenu(null)}>
+    <div className="flex h-dvh overflow-hidden bg-[var(--background)]" onClick={() => setOpenMenu(null)}>
+      {!mobileSidebarOpen ? (
+        <a
+          href="#app-main-content"
+          className="fixed left-4 top-3 z-50 -translate-y-24 rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white shadow-lg transition focus:translate-y-0 dark:bg-white dark:text-slate-950"
+        >
+          Skip to content
+        </a>
+      ) : null}
+
       {/* Mobile overlay */}
       {mobileSidebarOpen && (
         <div
-          className="fixed inset-0 z-20 bg-slate-900/50 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-20 bg-slate-950/55 backdrop-blur-sm lg:hidden"
           onClick={(e) => { e.stopPropagation(); setMobileSidebarOpen(false); }}
           aria-hidden="true"
         />
@@ -249,8 +308,11 @@ export function DashboardShell({ children, title, description }: DashboardShellP
         id="app-sidebar"
         ref={sidebarRef}
         aria-hidden={!isDesktopViewport && !mobileSidebarOpen}
+        aria-label={mobileSidebarOpen ? "App navigation drawer" : "App navigation"}
+        role={!isDesktopViewport && mobileSidebarOpen ? "dialog" : undefined}
+        aria-modal={!isDesktopViewport && mobileSidebarOpen ? true : undefined}
         inert={!isDesktopViewport && !mobileSidebarOpen ? true : undefined}
-        className={`fixed inset-y-0 left-0 z-30 w-64 flex-shrink-0 border-r border-slate-200 bg-white transition-all duration-300 dark:border-slate-800 dark:bg-slate-950 lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-30 w-64 flex-shrink-0 border-r border-slate-200/90 bg-white/98 transition-all duration-300 dark:border-slate-800 dark:bg-slate-950/98 lg:static lg:translate-x-0 ${
         sidebarCollapsed ? "lg:w-20" : "lg:w-64"
       } ${
         mobileSidebarOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
@@ -260,6 +322,17 @@ export function DashboardShell({ children, title, description }: DashboardShellP
           {/* Logo */}
           <div className={`relative border-b border-slate-200 py-3 dark:border-slate-800 ${sidebarCollapsed ? "lg:px-3 px-5" : "px-5"}`}>
             <div className={`flex items-center gap-3 ${sidebarCollapsed ? "lg:justify-center" : "justify-between"}`}>
+              {mobileSidebarOpen ? (
+                <button
+                  type="button"
+                  autoFocus
+                  onClick={() => setMobileSidebarOpen(false)}
+                  className="action-quiet order-last ml-auto shrink-0 cursor-pointer p-2 lg:hidden"
+                  aria-label="Close navigation"
+                >
+                  <X className="h-5 w-5" aria-hidden="true" />
+                </button>
+              ) : null}
               <div className={sidebarCollapsed ? "lg:hidden" : ""}>
                 <BrainLogo size="sm" variant="badge" showText={true} subText="Second Brain" href="/" />
               </div>
@@ -313,6 +386,7 @@ export function DashboardShell({ children, title, description }: DashboardShellP
                           href={item.href}
                           title={item.description ? `${item.label} - ${item.description}` : item.label}
                           aria-label={item.label}
+                          aria-current={isActive ? "page" : undefined}
                           onClick={() => {
                             setMobileSidebarOpen(false);
                           }}
@@ -415,16 +489,26 @@ export function DashboardShell({ children, title, description }: DashboardShellP
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
+      <main
+        id="app-main-content"
+        tabIndex={-1}
+        aria-hidden={mobileSidebarOpen ? true : undefined}
+        inert={mobileSidebarOpen ? true : undefined}
+        className="min-w-0 flex-1 overflow-y-auto"
+      >
         {/* Header */}
-        <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-4 py-4 dark:border-slate-800 dark:bg-slate-950/95 sm:px-6">
+        <header className="sticky top-0 z-10 border-b border-slate-200/90 bg-white/85 px-4 py-3 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/85 sm:px-6 sm:py-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 flex-1 items-center gap-3">
               {/* Hamburger - mobile only */}
               <button
                 ref={mobileSidebarToggleRef}
                 type="button"
-                onClick={(e) => { e.stopPropagation(); setMobileSidebarOpen(!mobileSidebarOpen); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpenMenu(null);
+                  setMobileSidebarOpen(!mobileSidebarOpen);
+                }}
                 className="action-quiet cursor-pointer p-2 lg:hidden"
                 aria-label={mobileSidebarOpen ? "Close sidebar" : "Open sidebar"}
                 aria-controls="app-sidebar"
@@ -433,8 +517,8 @@ export function DashboardShell({ children, title, description }: DashboardShellP
                 <Menu className="h-5 w-5" aria-hidden="true" />
               </button>
               <div className="min-w-0">
-                <h2 className="truncate text-xl font-semibold text-slate-900 dark:text-slate-100">{title}</h2>
-                <p className="mt-0.5 truncate text-sm text-slate-500 dark:text-slate-400">{description}</p>
+                <h1 className="truncate text-lg font-semibold tracking-[-0.015em] text-slate-950 dark:text-slate-100 sm:text-xl">{title}</h1>
+                <p className="mt-0.5 line-clamp-2 text-xs leading-4 text-slate-500 dark:text-slate-400 sm:line-clamp-1 sm:text-sm sm:leading-5">{description}</p>
               </div>
             </div>
 
@@ -443,15 +527,28 @@ export function DashboardShell({ children, title, description }: DashboardShellP
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === "settings" ? null : "settings"); }}
-                className="action-quiet cursor-pointer p-2"
-                aria-label="Settings"
+                className="action-quiet cursor-pointer overflow-hidden p-2"
+                aria-label="Open account menu"
+                aria-controls="account-menu"
+                aria-expanded={openMenu === "settings"}
+                aria-haspopup="true"
               >
-                <UserRound className="h-5 w-5" aria-hidden="true" />
+                {isAuthenticated && avatarUrl ? (
+                  <Image
+                    src={avatarUrl}
+                    alt=""
+                    width={28}
+                    height={28}
+                    className="h-7 w-7 rounded-full object-cover ring-2 ring-indigo-100 dark:ring-slate-700"
+                  />
+                ) : (
+                  <UserRound className="h-5 w-5" aria-hidden="true" />
+                )}
               </button>
 
               {/* Settings dropdown */}
               {openMenu === "settings" && (
-                <div className="animate-slide-down absolute right-0 top-11 z-20 w-80 enterprise-card bg-white dark:bg-slate-950">
+                <div id="account-menu" className="animate-slide-down absolute right-0 top-12 z-20 w-[min(20rem,calc(100vw-2rem))] enterprise-card bg-white dark:bg-slate-950">
                   {/* Profile section */}
                   <div className="flex items-center gap-3 border-b border-slate-100 p-4 dark:border-slate-700">
                     {avatarUrl ? (
@@ -468,8 +565,8 @@ export function DashboardShell({ children, title, description }: DashboardShellP
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-bold text-slate-950 dark:text-slate-100">{displayName}</p>
-                      <p className="truncate text-xs text-slate-500 dark:text-slate-400">{displayEmail || "Not signed in"}</p>
+                      <p className="truncate text-sm font-bold text-slate-950 dark:text-slate-100">{isAuthenticated ? displayName : "Guest mode"}</p>
+                      <p className="truncate text-xs text-slate-500 dark:text-slate-400">{displayEmail || "Your draft stays on this device"}</p>
                     </div>
                   </div>
 
@@ -504,15 +601,25 @@ export function DashboardShell({ children, title, description }: DashboardShellP
 
                     <div className="my-1.5 border-t border-slate-100 dark:border-slate-700" />
 
-                    {/* Logout */}
-                    <button
-                      type="button"
-                      onClick={() => { setOpenMenu(null); signOut(); }}
-                      className="flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20"
-                    >
-                      <LogOut className="h-4 w-4" aria-hidden="true" />
-                      Logout
-                    </button>
+                    {isAuthenticated ? (
+                      <button
+                        type="button"
+                        onClick={() => { setOpenMenu(null); signOut(); }}
+                        className="flex min-h-10 w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-rose-600 transition hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/20"
+                      >
+                        <LogOut className="h-4 w-4" aria-hidden="true" />
+                        Log out
+                      </button>
+                    ) : (
+                      <Link
+                        href="/login"
+                        onClick={() => setOpenMenu(null)}
+                        className="action-primary flex w-full px-3"
+                      >
+                        <LogIn className="h-4 w-4" aria-hidden="true" />
+                        Sign in to save memories
+                      </Link>
+                    )}
                   </div>
                 </div>
               )}
@@ -521,8 +628,8 @@ export function DashboardShell({ children, title, description }: DashboardShellP
         </header>
 
         {/* Content */}
-        <div className="animate-fade-in px-4 py-5 pb-24 sm:px-6 lg:px-8 lg:pb-5">
-          {children}
+        <div className="app-canvas animate-fade-in min-h-[calc(100dvh-4.5rem)] px-4 py-5 pb-28 sm:px-6 sm:py-6 lg:px-8 lg:pb-8">
+          <div className="mx-auto w-full max-w-[1600px]">{children}</div>
         </div>
       </main>
 
@@ -532,8 +639,8 @@ export function DashboardShell({ children, title, description }: DashboardShellP
           aria-label="Primary navigation"
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
         >
-          <div className="grid h-16 grid-cols-4 px-2">
-            {mainNavItems.map((item) => {
+          <div className="grid h-[4.25rem] grid-cols-5 px-1.5">
+            {sidebarMainNavItems.map((item) => {
               const isActive = item.match ? item.match(pathname) : pathname === item.href;
               const ItemIcon = item.icon;
               const accentStyle = navAccentStyles[item.accent];

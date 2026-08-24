@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [backendProfile, setBackendProfile] = useState<BackendAuthProfile | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(hasSupabaseConfig);
   const [configError, setConfigError] = useState<string | null>(
     hasSupabaseConfig ? null : "Missing Supabase environment variables"
   );
@@ -51,9 +51,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!supabase) {
-      setIsLoading(false);
       return;
     }
+
+    // Never leave navigation in a permanent loading state if session storage is
+    // unavailable or the auth client stalls during startup.
+    const loadingTimeoutId = window.setTimeout(() => {
+      setIsLoading(false);
+    }, 3000);
+
+    const finishLoading = () => {
+      window.clearTimeout(loadingTimeoutId);
+      setIsLoading(false);
+    };
 
     // Get initial session
     supabase.auth.getSession().then(async ({ data: { session }, error }) => {
@@ -63,7 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(null);
         setUser(null);
         setBackendProfile(null);
-        setIsLoading(false);
+        finishLoading();
         return;
       }
 
@@ -76,7 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else {
         setBackendProfile(null);
       }
-      setIsLoading(false);
+      finishLoading();
     });
 
     // Listen for auth changes
@@ -85,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(session);
         setUser(session?.user ?? null);
         if (!session) setBackendProfile(null);
-        setIsLoading(false);
+        finishLoading();
 
         // Sync with backend on sign in (non-blocking, skip if backend unavailable)
         if (event === 'SIGNED_IN' && session) {
@@ -99,6 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
 
     return () => {
+      window.clearTimeout(loadingTimeoutId);
       subscription.unsubscribe();
     };
   }, []);

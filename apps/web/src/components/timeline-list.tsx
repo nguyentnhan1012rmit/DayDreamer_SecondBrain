@@ -438,7 +438,7 @@ export function TimelineList({
   onProcessAttachment,
   isAdmin = false,
 }: TimelineListProps) {
-  const [currentPage, setCurrentPage] = useState(1);
+  const [requestedPage, setCurrentPage] = useState(1);
   const [expandedEntryIds, setExpandedEntryIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -466,6 +466,7 @@ export function TimelineList({
   const requestedAttachmentSizeUrls = useRef(new Set<string>());
   const pendingScrollEntryId = useRef<string | null>(null);
   const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+  const currentPage = Math.min(requestedPage, totalPages);
   const relatedMemoriesByEntry = useMemo(
     () => buildRelatedMemoryMap(entries),
     [entries],
@@ -686,6 +687,11 @@ export function TimelineList({
     setIsDeleting(true);
     try {
       await onDelete(deletingEntry.id);
+      const remainingPages = Math.max(
+        1,
+        Math.ceil(Math.max(entries.length - 1, 0) / PAGE_SIZE),
+      );
+      setCurrentPage((page) => Math.min(page, remainingPages));
       showToast("success", "Entry deleted successfully");
       setDeletingEntry(null);
     } catch (error) {
@@ -1454,7 +1460,10 @@ export function TimelineList({
             >
               Previous
             </button>
-            <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+            <span
+              className="text-sm font-medium text-slate-700 dark:text-slate-300"
+              aria-live="polite"
+            >
               Page {currentPage} of {totalPages}
             </span>
             <button

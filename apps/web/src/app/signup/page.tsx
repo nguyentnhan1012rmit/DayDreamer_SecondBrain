@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useMemo, useRef } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { BrainLogo } from "@/components/brain-logo";
@@ -24,17 +25,16 @@ export default function SignupPage() {
   const { signUpWithEmail, signInWithGoogle, isAuthenticated } = useAuth();
   const { resolvedTheme, toggleTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
+  const router = useRouter();
 
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [signupSuccess, setSignupSuccess] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const strength = useMemo(() => getPasswordStrength(password), [password]);
   const passwordsMatch = password === confirmPassword;
@@ -45,37 +45,31 @@ export default function SignupPage() {
     passwordsMatch &&
     !isSubmitting;
 
-  // Redirect if already authenticated
+  useEffect(() => {
+    if (isAuthenticated) router.replace("/diary");
+  }, [isAuthenticated, router]);
+
   if (isAuthenticated) {
-    if (typeof window !== "undefined") window.location.href = "/diary";
-    return null;
+    return (
+      <div className="auth-canvas flex min-h-dvh items-center justify-center px-4">
+        <div className="enterprise-card w-full max-w-sm p-6 text-center" role="status">
+          <div className="skeleton-line mx-auto h-3 w-32" />
+          <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-300">
+            Opening your diary…
+          </p>
+        </div>
+      </div>
+    );
   }
 
-  const handleAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    // Validate file type & size
-    if (!file.type.startsWith("image/")) {
-      setError("Please select an image file.");
-      return;
+  const handleGoogleSignup = async () => {
+    setError("");
+    setIsSubmitting(true);
+    const result = await signInWithGoogle();
+    if (result.error) {
+      setError(result.error);
+      setIsSubmitting(false);
     }
-    if (file.size > 2 * 1024 * 1024) {
-      setError("Image must be under 2MB.");
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      setAvatarPreview(reader.result as string);
-      setError("");
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const removeAvatar = () => {
-    setAvatarPreview(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleSignup = async (e: React.FormEvent) => {
@@ -106,9 +100,9 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#f6f8fb] dark:bg-slate-950">
+    <div className="auth-canvas flex min-h-dvh flex-col">
       {/* Minimal header */}
-      <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950">
+      <header className="border-b border-slate-200/90 bg-white/80 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/80">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-6">
           <BrainLogo size="sm" variant="badge" showText={true} href="/" />
           <button
@@ -130,7 +124,7 @@ export default function SignupPage() {
       </header>
 
       {/* Main content */}
-      <div className="flex flex-1 items-center justify-center px-4 py-12">
+      <main className="flex flex-1 items-center justify-center px-4 py-8 sm:py-12">
         <div className="w-full max-w-md">
           {/* Logo & title */}
           <div className="mb-8 text-center">
@@ -149,7 +143,7 @@ export default function SignupPage() {
           <div className="enterprise-card p-6">
             {signupSuccess ? (
               /* Success state */
-              <div className="py-4 text-center">
+              <div className="py-4 text-center" role="status">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/40">
                   <svg className="h-7 w-7 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -175,7 +169,8 @@ export default function SignupPage() {
                 {/* Google sign-up */}
                 <button
                   type="button"
-                  onClick={signInWithGoogle}
+                  onClick={handleGoogleSignup}
+                  disabled={isSubmitting}
                   className="action-secondary w-full"
                 >
                   <svg className="h-5 w-5" viewBox="0 0 24 24">
@@ -184,7 +179,7 @@ export default function SignupPage() {
                     <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
                     <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                   </svg>
-                  Sign up with Google
+                  {isSubmitting ? "Opening Google…" : "Sign up with Google"}
                 </button>
 
                 {/* Divider */}
@@ -195,57 +190,7 @@ export default function SignupPage() {
                 </div>
 
                 {/* Email signup form */}
-                <form onSubmit={handleSignup} className="space-y-4">
-                  {/* Avatar upload (optional) */}
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="relative">
-                      {avatarPreview ? (
-                        <div className="relative">
-                          <img
-                            src={avatarPreview}
-                            alt="Avatar preview"
-                            className="h-20 w-20 rounded-full object-cover ring-4 ring-indigo-100 dark:ring-indigo-900/40"
-                          />
-                          <button
-                            type="button"
-                            onClick={removeAvatar}
-                            className="absolute -top-1 -right-1 flex h-6 w-6 cursor-pointer items-center justify-center rounded-full bg-rose-500 text-white shadow-sm transition hover:bg-rose-600"
-                          >
-                            <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          className="flex h-20 w-20 cursor-pointer items-center justify-center rounded-full border-2 border-dashed border-slate-300 bg-slate-50 transition hover:border-indigo-400 hover:bg-indigo-50 dark:border-slate-600 dark:bg-slate-700 dark:hover:border-indigo-500 dark:hover:bg-indigo-900/20"
-                        >
-                          <svg className="h-8 w-8 text-slate-400 dark:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                    <div className="text-center">
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="cursor-pointer text-xs font-medium text-indigo-600 transition hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
-                      >
-                        {avatarPreview ? "Change photo" : "Upload photo"}
-                      </button>
-                    </div>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      onChange={handleAvatarSelect}
-                      className="hidden"
-                    />
-                  </div>
-
+                <form onSubmit={handleSignup} className="space-y-4" aria-describedby={error ? "signup-error" : undefined}>
                   {/* Name (required) */}
                   <div>
                     <label htmlFor="signup-name" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
@@ -258,9 +203,14 @@ export default function SignupPage() {
                       onChange={(e) => setDisplayName(e.target.value)}
                       required
                       autoComplete="name"
+                      minLength={2}
+                      aria-describedby="signup-name-hint"
                       className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:focus:border-indigo-500 dark:focus:ring-indigo-900/40"
                       placeholder="Your full name"
                     />
+                    <p id="signup-name-hint" className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                      Use at least 2 characters.
+                    </p>
                   </div>
 
                   {/* Email */}
@@ -294,6 +244,7 @@ export default function SignupPage() {
                         required
                         minLength={6}
                         autoComplete="new-password"
+                        aria-describedby={password ? "password-strength" : "password-requirement"}
                         className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 pr-12 text-sm text-slate-900 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:focus:border-indigo-500 dark:focus:ring-indigo-900/40"
                         placeholder="At least 6 characters"
                       />
@@ -318,7 +269,7 @@ export default function SignupPage() {
                     </div>
                     {/* Password strength indicator */}
                     {password && (
-                      <div className="mt-2">
+                      <div id="password-strength" className="mt-2" role="status">
                         <div className="flex items-center gap-2">
                           <div className="h-1.5 flex-1 rounded-full bg-slate-200 dark:bg-slate-600">
                             <div
@@ -329,6 +280,11 @@ export default function SignupPage() {
                           <span className="text-xs font-medium text-slate-500 dark:text-slate-400">{strength.label}</span>
                         </div>
                       </div>
+                    )}
+                    {!password && (
+                      <p id="password-requirement" className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                        At least 6 characters; a longer, varied password is stronger.
+                      </p>
                     )}
                   </div>
 
@@ -344,6 +300,8 @@ export default function SignupPage() {
                       onChange={(e) => setConfirmPassword(e.target.value)}
                       required
                       autoComplete="new-password"
+                      aria-invalid={Boolean(confirmPassword && !passwordsMatch)}
+                      aria-describedby={confirmPassword && !passwordsMatch ? "password-mismatch" : undefined}
                       className={`w-full rounded-xl border bg-white px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:ring-4 dark:bg-slate-700 dark:text-slate-100 ${
                         confirmPassword && !passwordsMatch
                           ? "border-rose-300 focus:border-rose-400 focus:ring-rose-100 dark:border-rose-600 dark:focus:ring-rose-900/40"
@@ -352,13 +310,13 @@ export default function SignupPage() {
                       placeholder="Re-enter your password"
                     />
                     {confirmPassword && !passwordsMatch && (
-                      <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">Passwords do not match</p>
+                      <p id="password-mismatch" className="mt-1 text-xs text-rose-600 dark:text-rose-400">Passwords do not match</p>
                     )}
                   </div>
 
                   {/* Error */}
                   {error && (
-                    <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-400">
+                    <div id="signup-error" role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-400">
                       {error}
                     </div>
                   )}
@@ -372,9 +330,8 @@ export default function SignupPage() {
                     {isSubmitting ? "Creating account..." : "Create Account"}
                   </button>
 
-                  <p className="text-center text-xs text-slate-400 dark:text-slate-500">
-                    By signing up, you agree to our terms of service.
-                    If you later sign in with Google using the same email, your accounts will be linked.
+                  <p className="text-center text-xs leading-5 text-slate-500 dark:text-slate-400">
+                    You can review account and privacy controls anytime in Settings. If you later sign in with Google using the same email, your accounts will be linked.
                   </p>
                 </form>
               </>
@@ -391,7 +348,7 @@ export default function SignupPage() {
             </p>
           )}
         </div>
-      </div>
+      </main>
     </div>
   );
 }
