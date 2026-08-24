@@ -3,6 +3,7 @@ import './env';
 import { prisma } from './lib/prisma';
 import { captureWorkerException } from './instrument';
 import { renderWorkerMetrics, WORKER_METRICS_CONTENT_TYPE } from './metrics';
+import { assertAudioTranscriptionRuntimeReady } from './jobs/ingestion/attachment-extraction';
 
 // 1. Import all background jobs with a single line
 import {
@@ -22,6 +23,9 @@ console.log('===================================================');
 const WORKER_HEARTBEAT_ID = process.env.WORKER_HEARTBEAT_ID ?? 'indexing-worker';
 const WORKER_HEARTBEAT_INTERVAL_MS = Number(process.env.WORKER_HEARTBEAT_INTERVAL_MS ?? 15000);
 let heartbeatTimer: NodeJS.Timeout | null = null;
+let workerReady = false;
+let startupError: string | null = null;
+let audioTranscriptionProvider = 'unknown';
 
 async function writeWorkerHeartbeat(status: 'running' | 'stopping', detail?: string) {
     try {
@@ -68,6 +72,10 @@ function installShutdownHandler(signal: NodeJS.Signals) {
 
 // 2. Initialize and start all Cron Jobs
 try {
+    audioTranscriptionProvider = assertAudioTranscriptionRuntimeReady();
+    console.log(
+        `[Worker Readiness] Audio transcription provider "${audioTranscriptionProvider}" is ready.`,
+    );
     startWorkerHeartbeat();
 
     // Data Retrieval Pipeline
@@ -89,7 +97,9 @@ try {
     console.log('===================================================');
     console.log('All background jobs have been scheduled successfully!');
     console.log('===================================================');
+    workerReady = true;
 } catch (error) {
+    startupError = error instanceof Error ? error.message : String(error);
     console.error('Critical error while starting the Worker:', error);
     void captureWorkerException(error).finally(() => process.exit(1));
 }
@@ -103,6 +113,20 @@ import http from 'http';
 const port = Number(process.env.PORT ?? 3002);
 const server = http.createServer((req, res) => {
   const pathname = req.url ? new URL(req.url, 'http://worker.local').pathname : '/';
+
+  if (pathname === '/ready') {
+    res.writeHead(workerReady ? 200 : 503, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    });
+    res.end(JSON.stringify({
+      status: workerReady ? 'ready' : 'not_ready',
+      workerId: WORKER_HEARTBEAT_ID,
+      audioTranscriptionProvider,
+      ...(startupError ? { detail: startupError } : {}),
+    }));
+    return;
+  }
 
   if (pathname === '/health' || pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -128,6 +152,7 @@ server.listen(port, '0.0.0.0', () => {
 });
 
 function closeHttpServer() {
+  workerReady = false;
   server.close();
 }
 

@@ -401,7 +401,12 @@ describe('SearchService', () => {
       answer: 'This audio explains the sample file service.',
       confidence: 'high',
       citations: [],
-      analytics: { tokenUsage: { totalTokens: 7 } },
+      analytics: {
+        tokenUsage: { totalTokens: 7 },
+        status: 'success',
+        answerMode: 'fast_path',
+      },
+      answerMode: 'fast_path',
     });
 
     await service.answerQuestion('supabase-user-1', {
@@ -423,6 +428,49 @@ describe('SearchService', () => {
         }),
       }),
     );
+    expect(saveSearchHistory).toHaveBeenCalledWith(
+      prisma,
+      expect.objectContaining({
+        cacheEligible: false,
+        sourceScope: {
+          sourceType: 'attachment',
+          sourceId: 'attachment-1',
+        },
+      }),
+    );
+  });
+
+  it('bypasses answer cache when maxDistance is explicitly zero', async () => {
+    process.env.MEMORY_DEBUG_TRACE = 'false';
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+    (findCachedAnswer as jest.Mock).mockResolvedValue({
+      answer: 'Unconstrained cached answer',
+      confidence: 'medium',
+    });
+    (answerMemory as jest.Mock).mockResolvedValue({
+      answer: 'Fresh exact-distance answer',
+      confidence: 'high',
+      citations: [],
+      analytics: { tokenUsage: { totalTokens: 7 } },
+    });
+
+    const result = await service.answerQuestion('supabase-user-1', {
+      question: 'What happened today?',
+      responseLanguage: 'en',
+      maxDistance: 0,
+    });
+
+    expect(findCachedAnswer).not.toHaveBeenCalled();
+    expect(answerMemory).toHaveBeenCalledWith(
+      'What happened today?',
+      'user-1',
+      prisma,
+      expect.objectContaining({ maxDistance: 0 }),
+    );
+    expect(result).toMatchObject({
+      answer: 'Fresh exact-distance answer',
+      cached: false,
+    });
   });
 
   it('bypasses answer cache when a non-default limit is present', async () => {

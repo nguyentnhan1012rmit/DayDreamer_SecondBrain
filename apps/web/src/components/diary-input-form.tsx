@@ -26,6 +26,11 @@ import {
   readHomeDraft,
   storeHomeDraft,
 } from "@/lib/home-draft";
+import {
+  isAttachmentRemovable,
+  retainAttachmentErrors,
+} from "@/lib/attachment-state";
+import { toLocalDateKey } from "@/lib/memory-date";
 import { MOOD_OPTIONS } from "@/lib/mood-meta";
 import {
   createDiaryEntry,
@@ -78,13 +83,6 @@ function isAudioFile(file: Pick<File, "type">) {
   return isAudioAttachmentMimeType(file.type);
 }
 
-function getLocalDateInputValue(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function getReflectionFallback(mood: DiaryMood) {
   if (mood === "great") {
     return "What helped create this energy, and how could you carry it forward?";
@@ -112,7 +110,7 @@ function normalizeReflectionQuestion(value: string, fallback: string) {
 }
 
 function isSameLocalDate(isoDate: string, localDate: string) {
-  return getLocalDateInputValue(new Date(isoDate)) === localDate;
+  return toLocalDateKey(isoDate) === localDate;
 }
 
 function formatCompactEventTime(event: CalendarEventRecord) {
@@ -146,13 +144,15 @@ function getAttachmentStatusClass(status: AttachmentStatus) {
   return "bg-indigo-50 text-indigo-700 ring-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-300 dark:ring-indigo-800";
 }
 
-const initialDraft: DiaryDraft = {
-  title: "",
-  content: "",
-  entryDate: getLocalDateInputValue(),
-  mood: "neutral",
-  tags: [],
-};
+function createInitialDraft(): DiaryDraft {
+  return {
+    title: "",
+    content: "",
+    entryDate: toLocalDateKey(),
+    mood: "neutral",
+    tags: [],
+  };
+}
 
 const CAPTURE_MODES = [
   { value: "write", label: "Write", icon: PencilLine },
@@ -278,7 +278,7 @@ const TEMPLATES_EN: TemplateItem[] = [
 
 export function DiaryInputForm() {
   const { getAccessToken, isAuthenticated } = useAuth();
-  const [draft, setDraft] = useState<DiaryDraft>(initialDraft);
+  const [draft, setDraft] = useState<DiaryDraft>(createInitialDraft);
   const [state, setState] = useState<SaveState>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isCopilotLoading, setIsCopilotLoading] = useState(false);
@@ -777,7 +777,9 @@ export function DiaryInputForm() {
       const queuedAttachments = attachmentItems.filter(
         (item) => item.status === "queued",
       );
-      let attachmentHadErrors = false;
+      let attachmentHadErrors = attachmentItems.some(
+        (item) => item.status === "error",
+      );
 
       for (const item of queuedAttachments) {
         try {
@@ -791,10 +793,12 @@ export function DiaryInputForm() {
             item.file,
             accessToken,
           );
+          const uploadStatus = getAttachmentStatus(uploadResult);
+          let finalStatus = uploadStatus;
           updateAttachmentItem(item.id, {
             attachmentId: uploadResult.attachment.id,
             signedUrl: uploadResult.attachment.signedUrl,
-            status: getAttachmentStatus(uploadResult),
+            status: uploadStatus,
             message: getAttachmentMessage(uploadResult),
             memoryChunkCount: uploadResult.memoryChunkCount,
           });
@@ -804,8 +808,10 @@ export function DiaryInputForm() {
               uploadResult.attachment.id,
               accessToken,
             );
+            const processStatus = getAttachmentStatus(processResult);
+            finalStatus = processStatus;
             updateAttachmentItem(item.id, {
-              status: getAttachmentStatus(processResult),
+              status: processStatus,
               signedUrl:
                 processResult.attachment.signedUrl ??
                 uploadResult.attachment.signedUrl,
@@ -813,6 +819,7 @@ export function DiaryInputForm() {
               memoryChunkCount: processResult.memoryChunkCount,
             });
           }
+          if (finalStatus === "error") attachmentHadErrors = true;
         } catch (attachmentError) {
           attachmentHadErrors = true;
           updateAttachmentItem(item.id, {
@@ -825,7 +832,8 @@ export function DiaryInputForm() {
         }
       }
 
-      setDraft(initialDraft);
+      setDraft(createInitialDraft());
+      setAttachmentItems((current) => retainAttachmentErrors(current));
       clearHomeDraft();
       setTagInput("");
       if (attachmentHadErrors) {
@@ -1350,7 +1358,7 @@ export function DiaryInputForm() {
                       Open
                     </a>
                   ) : null}
-                  {item.status === "queued" ? (
+                  {isAttachmentRemovable(item.status) ? (
                     <button
                       type="button"
                       onClick={() => removeAttachment(item.id)}
@@ -1399,7 +1407,7 @@ export function DiaryInputForm() {
                   onClick={() => {
                     setCaptureMode("write");
                     setDraft({
-                      ...initialDraft,
+                      ...createInitialDraft(),
                       title: `Reflection on ${savedReflection.entryTitle}`,
                       content: `${savedReflection.question}\n\n`,
                       mood: savedReflection.mood,

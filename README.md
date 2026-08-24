@@ -204,8 +204,12 @@ AUDIO_TRANSCRIPTION_PROVIDER="local"                  # local (default) uses Whi
 WHISPER_MODEL="Xenova/whisper-tiny"                  # optional multilingual local ASR model
 WHISPER_CACHE_DIR="/tmp/second-brain-whisper-cache"  # optional; persist this directory in production
 AUDIO_TRANSCRIPTION_LANGUAGE=""                       # optional ISO language code; blank enables detection
+AUDIO_TRANSCRIPTION_MAX_DURATION_SECONDS=1800         # local provider hard limit; 30-7200 seconds
+AUDIO_TRANSCRIPTION_FFMPEG_TIMEOUT_MS=120000          # local ffmpeg runtime cap; 10000-600000 ms
 TUTURUUU_TRANSCRIPTION_MODEL="google/gemini-3.5-flash-lite" # only used when provider=tuturuuu
 AUDIO_TRANSCRIPTION_MAX_OUTPUT_TOKENS=6000            # only used when provider=tuturuuu; 500-12000
+PDF_OCR_MAX_PAGES=30                                  # maximum scanned/blank pages OCR attempts per PDF
+PDF_OCR_MIN_TEXT_CHARACTERS=40                        # OCR pages with less embedded text than this
 INDEXING_JOB_DELAY_MS="15000"                          # optional, avoids rate limits during local drain
 INDEXING_WORKER_BATCH_SIZE="2"                         # optional; small claims keep leases fresh
 INDEXING_LEASE_TIMEOUT_MS="300000"                     # optional; stale processing lease timeout
@@ -224,6 +228,11 @@ SENTRY_DSN=""                                           # optional; set from Sen
 SENTRY_ENVIRONMENT="local"                              # optional: local, demo, staging, production
 SENTRY_TRACES_SAMPLE_RATE="0.1"                         # optional: 0 to 1
 ```
+
+The worker checks the configured audio provider during startup. With the
+default `local` provider, a missing `ffmpeg` executable is a startup error and
+`GET http://localhost:3002/ready` remains unavailable; the official Docker
+worker image includes ffmpeg. `GET /health` remains the liveness endpoint.
 
 Core AI memory uses Tuturuuu's metered `/v1/responses` and `/v1/embeddings`
 endpoints with `Authorization: Bearer $TUTURUUU_AI_API_KEY`. Keep the `ttr_ai_`

@@ -22,7 +22,11 @@ export async function retrieveUnindexedDiaryFallbackHits(
   userId: string,
   filters: RetrievalFilters,
 ): Promise<MemorySearchHit[]> {
-  if (!shouldReadUnindexedDiaries(filters)) return [];
+  if (!canReadDiaryFallback(filters)) return [];
+
+  const scopedSourceIds = resolveScopedSourceIds(filters);
+  if (scopedSourceIds?.length === 0) return [];
+  const sourceIdFilter = buildSourceIdFilter(scopedSourceIds, 5);
 
   const queryRawUnsafe = (dbClient as {
     $queryRawUnsafe?: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
@@ -49,6 +53,7 @@ export async function retrieveUnindexedDiaryFallbackHits(
             d.entry_date BETWEEN $2 AND $3
             OR (d.entry_date IS NULL AND d.created_at BETWEEN $2 AND $3)
           )
+          ${sourceIdFilter}
           AND NOT EXISTS (
             SELECT 1
             FROM memory_chunks m
@@ -63,13 +68,17 @@ export async function retrieveUnindexedDiaryFallbackHits(
       filters.startDate,
       filters.endDate,
       Math.min(filters.limit ?? 8, 8),
+      ...(scopedSourceIds ?? []),
     );
   } catch (error) {
     console.warn("[AnswerMemory] Unindexed diary fallback failed:", error);
     return [];
   }
 
+  const allowedSourceIds = scopedSourceIds ? new Set(scopedSourceIds) : null;
+
   return rows
+    .filter((row) => !allowedSourceIds || allowedSourceIds.has(row.id))
     .map((row, index) => buildUnindexedDiaryHit(row, index))
     .filter((hit): hit is MemorySearchHit => hit !== null);
 }
@@ -79,7 +88,11 @@ export async function findDiariesCreatedInRangeWithDifferentEntryDate(
   userId: string,
   filters: RetrievalFilters,
 ): Promise<CreatedDiaryDateMismatch[]> {
-  if (!filters.startDate || !filters.endDate) return [];
+  if (!canReadDiaryFallback(filters)) return [];
+
+  const scopedSourceIds = resolveScopedSourceIds(filters);
+  if (scopedSourceIds?.length === 0) return [];
+  const sourceIdFilter = buildSourceIdFilter(scopedSourceIds, 4);
 
   const queryRawUnsafe = (dbClient as {
     $queryRawUnsafe?: <T = unknown>(query: string, ...values: unknown[]) => Promise<T>;
@@ -106,30 +119,39 @@ export async function findDiariesCreatedInRangeWithDifferentEntryDate(
           AND d.created_at BETWEEN $2 AND $3
           AND d.entry_date IS NOT NULL
           AND NOT (d.entry_date BETWEEN $2 AND $3)
+          ${sourceIdFilter}
         ORDER BY d.created_at DESC
         LIMIT 3
       `,
       userId,
       filters.startDate,
       filters.endDate,
+      ...(scopedSourceIds ?? []),
     );
   } catch (error) {
     console.warn("[AnswerMemory] Created-date mismatch lookup failed:", error);
     return [];
   }
 
-  return rows.map((row) => ({
-    id: row.id,
-    rawText: row.raw_text,
-    entryDate: new Date(row.entry_date),
-    createdAt: new Date(row.created_at),
-  }));
+  const allowedSourceIds = scopedSourceIds ? new Set(scopedSourceIds) : null;
+
+  return rows
+    .filter((row) => !allowedSourceIds || allowedSourceIds.has(row.id))
+    .map((row) => ({
+      id: row.id,
+      rawText: row.raw_text,
+      entryDate: new Date(row.entry_date),
+      createdAt: new Date(row.created_at),
+    }));
 }
 
-function shouldReadUnindexedDiaries(filters: RetrievalFilters): boolean {
+function canReadDiaryFallback(filters: RetrievalFilters): boolean {
   if (!filters.startDate || !filters.endDate) return false;
   if (filters.sourceType && filters.sourceType !== "diary") return false;
   if (filters.sourceTypes?.length && !filters.sourceTypes.includes("diary")) return false;
+  if (filters.chunkType && filters.chunkType !== "general") return false;
+  if (filters.chunkTypes?.length && !filters.chunkTypes.includes("general")) return false;
+  if (filters.fileTypePrefixes?.length) return false;
   if (
     filters.preferredSourceTypes?.length &&
     !filters.preferredSourceTypes.includes("diary")
@@ -138,6 +160,35 @@ function shouldReadUnindexedDiaries(filters: RetrievalFilters): boolean {
   }
 
   return true;
+}
+
+function resolveScopedSourceIds(filters: RetrievalFilters): string[] | null {
+  const sourceId = filters.sourceId?.trim();
+  const sourceIds = [
+    ...new Set(
+      (filters.sourceIds ?? [])
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (sourceId && sourceIds.length) {
+    return sourceIds.includes(sourceId) ? [sourceId] : [];
+  }
+  if (sourceId) return [sourceId];
+  return sourceIds.length ? sourceIds : null;
+}
+
+function buildSourceIdFilter(
+  sourceIds: string[] | null,
+  firstParameterIndex: number,
+): string {
+  if (!sourceIds) return "";
+
+  const parameters = sourceIds
+    .map((_, index) => `$${firstParameterIndex + index}::text`)
+    .join(", ");
+  return `AND d.id::text IN (${parameters})`;
 }
 
 function buildUnindexedDiaryHit(row: UnindexedDiaryRow, index: number): MemorySearchHit | null {

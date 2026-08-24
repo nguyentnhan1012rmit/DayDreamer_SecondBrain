@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { MOOD_META } from "@/lib/mood-meta";
+import { resolveMemoryDate, toLocalDateKey } from "@/lib/memory-date";
 import {
   deleteDiaryEntry,
   getDiaryAttachmentContent,
@@ -56,18 +57,6 @@ function SkeletonCards() {
 /* ─── Mini Calendar ─── */
 const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
-function getEntryActivityDate(entry: DiaryEntry, isAdmin: boolean) {
-  return isAdmin ? (entry.entryDate ?? entry.createdAt) : entry.createdAt;
-}
-
-function getLocalDateKey(value: string | Date) {
-  const date = value instanceof Date ? value : new Date(value);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function MiniCalendar({
   entryDates,
   selectedDate,
@@ -92,7 +81,7 @@ function MiniCalendar({
   const firstDay = new Date(year, month, 1).getDay();
   const offset = firstDay === 0 ? 6 : firstDay - 1;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const todayKey = getLocalDateKey(new Date());
+  const todayKey = toLocalDateKey();
 
   const cells: (number | null)[] = [
     ...Array.from({ length: offset }, () => null),
@@ -292,27 +281,27 @@ export function TimelineContainer() {
   const sortedEntries = useMemo(() => {
     return [...entries].sort(
       (first, second) =>
-        new Date(getEntryActivityDate(second, isAdmin)).getTime() -
-        new Date(getEntryActivityDate(first, isAdmin)).getTime(),
+        resolveMemoryDate(second).getTime() -
+        resolveMemoryDate(first).getTime(),
     );
-  }, [entries, isAdmin]);
+  }, [entries]);
 
   // Build set of date keys that have entries
   const entryDates = useMemo(() => {
     const set = new Set<string>();
     for (const e of entries) {
-      set.add(getLocalDateKey(getEntryActivityDate(e, isAdmin)));
+      set.add(toLocalDateKey(resolveMemoryDate(e)));
     }
     return set;
-  }, [entries, isAdmin]);
+  }, [entries]);
 
   // Filter entries by selected date
   const filteredEntries = useMemo(() => {
     if (!selectedDate) return sortedEntries;
     return sortedEntries.filter(
-      (e) => getLocalDateKey(getEntryActivityDate(e, isAdmin)) === selectedDate,
+      (e) => toLocalDateKey(resolveMemoryDate(e)) === selectedDate,
     );
-  }, [isAdmin, selectedDate, sortedEntries]);
+  }, [selectedDate, sortedEntries]);
 
   const moodStats = useMemo(() => {
     return entries.reduce<Record<string, number>>((counts, entry) => {

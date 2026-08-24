@@ -27,11 +27,12 @@ export function auditLogMiddleware(
   res.on('finish', () => {
     const durationMs = Math.round(performance.now() - start);
     const userId = req.user?.userId ?? req.user?.sub ?? null;
-    const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'log';
+    const level =
+      res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'log';
     const record = {
       requestId: req.requestId ?? null,
       method: req.method,
-      path: req.originalUrl || req.url,
+      path: getAuditPath(req),
       statusCode: res.statusCode,
       durationMs,
       userId,
@@ -42,6 +43,13 @@ export function auditLogMiddleware(
   });
 
   next();
+}
+
+export function getAuditPath(
+  req: Pick<Request, 'path' | 'originalUrl' | 'url'>,
+) {
+  const path = req.path || req.originalUrl || req.url || '/';
+  return path.split(/[?#]/, 1)[0] || '/';
 }
 
 export function getAuditLogStatus() {

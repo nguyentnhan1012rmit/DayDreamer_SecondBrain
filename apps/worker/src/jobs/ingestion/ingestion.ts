@@ -33,18 +33,15 @@ import type { WorkerMetricsSnapshot } from "../../metrics";
 import {
   extractAudioAttachmentContent,
   extractAttachmentContent,
+  extractImageAttachmentContent,
   isAudioMimeType,
-  prepareImageForExtraction,
 } from "./attachment-extraction";
 import {
   calculateFailureTransition,
   calculateReconnectDelayMs,
   SingleFlight,
 } from "./reliability";
-import {
-  extractImageTextLocally,
-  extractPdfTextLocally,
-} from "./local-document-extraction";
+import { extractPdfTextLocally } from "./local-document-extraction";
 
 type IndexingJob = {
   id: string;
@@ -487,29 +484,29 @@ export class DataIngestionJob {
               fileName: sourceTitle ?? attachment.storage_path,
               maxOutputTokens: this.getAudioTranscriptionMaxOutputTokens(),
             });
+          } else if (image) {
+            extractedText = await extractImageAttachmentContent({
+              attachmentId: attachment.id,
+              buffer: rawBuffer,
+              fileName: sourceTitle ?? attachment.storage_path,
+              maxOutputTokens: this.getAttachmentExtractionMaxOutputTokens(),
+            });
           } else {
-            extractedText = image
-              ? await extractImageTextLocally(rawBuffer)
-              : await extractPdfTextLocally(rawBuffer);
-
-            if (!extractedText && image) {
-              const optimizedImage = await prepareImageForExtraction(rawBuffer);
-              extractedText = await extractAttachmentContent({
-                attachmentId: attachment.id,
-                base64Data: optimizedImage.buffer.toString("base64"),
-                mimeType: optimizedImage.mimeType,
-                fileName: sourceTitle ?? attachment.storage_path,
-                maxOutputTokens: this.getAttachmentExtractionMaxOutputTokens(),
-              });
-            }
+            extractedText = await extractPdfTextLocally(rawBuffer);
 
             if (!extractedText) {
               throw new Error(
-                pdf
-                  ? "PDF contains no extractable or OCR-readable text."
-                  : "Image contains no OCR-readable text and vision extraction was unavailable.",
+                "PDF contains no extractable or OCR-readable text.",
               );
             }
+          }
+
+          if (!extractedText) {
+            throw new Error(
+              image
+                ? "Image contains no OCR- or vision-readable content."
+                : "Attachment contains no extractable content.",
+            );
           }
         } else {
           const { data, error } = await supabase.storage

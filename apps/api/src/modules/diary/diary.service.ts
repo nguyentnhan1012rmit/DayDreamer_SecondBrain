@@ -11,6 +11,7 @@ import { invalidateUserSearchCache } from '../../common/cache/search-answer-cach
 import { PrismaService } from '../../prisma/prisma.service'; // Adjust path based on your setup
 import { StorageService } from '../../storage/storage.service';
 import { CreateDiaryDto, DIARY_MOODS } from './dto/create-diary.dto';
+import { UpdateDiaryDto } from './dto/update-diary.dto';
 
 type DiaryMood = (typeof DIARY_MOODS)[number];
 
@@ -34,7 +35,7 @@ export class DiaryService {
       const mood = this.normalizeMood(dto.mood);
       const created = await tx.diaryEntry.create({
         data: {
-          raw_text: `${dto.title}\n\n${dto.content}`,
+          raw_text: this.buildRawText(dto.title, dto.content),
           user_id: user.id,
           status: 'published',
           ...(mood ? { mood } : {}),
@@ -131,7 +132,7 @@ export class DiaryService {
     return this.toClientEntry(entry);
   }
 
-  async update(userId: string, id: string, dto: Partial<CreateDiaryDto>) {
+  async update(userId: string, id: string, dto: UpdateDiaryDto) {
     const { user, entry: existingEntry } = await this.findOwnedEntry(
       userId,
       id,

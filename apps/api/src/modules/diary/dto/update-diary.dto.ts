@@ -10,37 +10,38 @@ import {
   MaxLength,
 } from 'class-validator';
 import { trimStringValue } from '../../../common/transforms/trim-string';
+import { DIARY_MOODS } from './create-diary.dto';
 
-export const DIARY_MOODS = ['great', 'good', 'neutral', 'bad'] as const;
-
-export class CreateDiaryDto {
+export class UpdateDiaryDto {
+  @IsOptional()
   @Transform(trimStringValue)
   @IsString()
   @IsNotEmpty()
-  title: string;
+  title?: string;
 
+  @IsOptional()
   @Transform(trimStringValue)
   @IsString()
   @IsNotEmpty()
-  content: string;
+  content?: string;
 
+  @IsOptional()
   @IsArray()
-  @IsOptional()
   @IsString({ each: true })
-  attachments?: string[]; // Array of URLs from your /upload API
+  attachments?: string[];
 
-  @IsDateString()
   @IsOptional()
+  @IsDateString()
   entryDate?: string;
 
-  @IsIn(DIARY_MOODS)
   @IsOptional()
+  @IsIn(DIARY_MOODS)
   mood?: (typeof DIARY_MOODS)[number];
 
+  @IsOptional()
   @IsArray()
   @ArrayMaxSize(12)
   @IsString({ each: true })
   @MaxLength(32, { each: true })
-  @IsOptional()
   tags?: string[];
 }

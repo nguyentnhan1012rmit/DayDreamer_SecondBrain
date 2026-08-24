@@ -899,11 +899,9 @@ export async function requeueDeadLetterIndexingJobs(
   );
 
   if (!response.ok) {
-    const error = await response
-      .json()
-      .catch(() => ({
-        message: "Failed to requeue dead-letter indexing jobs",
-      }));
+    const error = await response.json().catch(() => ({
+      message: "Failed to requeue dead-letter indexing jobs",
+    }));
     throw new Error(error.message || `HTTP ${response.status}`);
   }
 
@@ -921,6 +919,10 @@ export type SearchHistoryEntry = {
   token_count: number;
   created_at: string;
   expires_at: string;
+  source_scope?: {
+    sourceType: string;
+    sourceId: string;
+  } | null;
 };
 
 export async function getSearchHistory(

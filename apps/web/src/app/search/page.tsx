@@ -2034,9 +2034,10 @@ export default function SearchPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      setSourceScope(null);
+                      const historyScope = item.source_scope ?? null;
+                      setSourceScope(historyScope);
                       setQuestion(item.question);
-                      void runSearch(item.question, null);
+                      void runSearch(item.question, historyScope);
                     }}
                     className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left text-xs text-slate-600 transition hover:text-indigo-700 dark:text-slate-300 dark:hover:text-indigo-300"
                   >

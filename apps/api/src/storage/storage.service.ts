@@ -5,6 +5,18 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const DEFAULT_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
+function hasStatusCode(error: unknown, expectedStatusCode: number) {
+  if (!error || typeof error !== 'object' || !('statusCode' in error)) {
+    return false;
+  }
+
+  const statusCode = (error as { statusCode?: unknown }).statusCode;
+  return (
+    statusCode === expectedStatusCode ||
+    statusCode === String(expectedStatusCode)
+  );
+}
+
 @Injectable()
 export class StorageService {
   private supabase?: SupabaseClient;
@@ -46,7 +58,10 @@ export class StorageService {
       }
       await supabase.storage.createBucket(bucket, { public: false });
     } catch (err) {
-      console.warn(`[StorageService] Auto-create bucket '${bucket}' note:`, err);
+      console.warn(
+        `[StorageService] Auto-create bucket '${bucket}' note:`,
+        err,
+      );
     }
   }
 
@@ -64,7 +79,7 @@ export class StorageService {
         upsert: false,
       });
 
-    if (result.error && (result.error as any).statusCode === '404') {
+    if (result.error && hasStatusCode(result.error, 404)) {
       await this.ensureBucketExists(bucket);
       result = await supabase.storage
         .from(bucket)
@@ -97,7 +112,9 @@ export class StorageService {
       .createSignedUrl(path, expiresInSeconds);
 
     if (error) {
-      console.error('[StorageService] createSignedUrl error:', error);
+      if (!hasStatusCode(error, 404)) {
+        console.error('[StorageService] createSignedUrl error:', error);
+      }
       throw error;
     }
     return data.signedUrl;
@@ -105,9 +122,7 @@ export class StorageService {
 
   async downloadFile(bucket: string, path: string) {
     const supabase = this.getSupabaseClient();
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .download(path);
+    const { data, error } = await supabase.storage.from(bucket).download(path);
 
     if (error) {
       console.error('[StorageService] downloadFile error:', error);

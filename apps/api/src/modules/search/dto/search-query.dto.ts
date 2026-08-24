@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsDateString,
   IsIn,
@@ -11,8 +11,10 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+import { trimStringValue } from '../../../common/transforms/trim-string';
 
 export class SearchQueryDto {
+  @Transform(trimStringValue)
   @IsString()
   @MinLength(1)
   question: string;

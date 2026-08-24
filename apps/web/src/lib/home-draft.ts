@@ -1,4 +1,5 @@
 import type { DiaryMood } from "@/lib/api-client";
+import { toLocalDateKey } from "@/lib/memory-date";
 
 export const HOME_DRAFT_STORAGE_KEY = "daydreamer-home-draft-v1";
 
@@ -10,14 +11,14 @@ export type HomeDraft = {
   tags: string[];
 };
 
-export function buildHomeDraft(content: string): HomeDraft {
+export function buildHomeDraft(content: string, now = new Date()): HomeDraft {
   const trimmedContent = content.trim();
   const firstLine = trimmedContent.split(/\n|[.!?](?:\s|$)/)[0]?.trim() || "A new memory";
 
   return {
     title: firstLine.slice(0, 80),
     content: trimmedContent,
-    entryDate: new Date().toISOString().slice(0, 10),
+    entryDate: toLocalDateKey(now),
     mood: "neutral",
     tags: [],
   };
@@ -35,7 +36,10 @@ export function readHomeDraft(): HomeDraft | null {
     return {
       title: typeof draft.title === "string" && draft.title.trim() ? draft.title : "A new memory",
       content: draft.content,
-      entryDate: typeof draft.entryDate === "string" ? draft.entryDate : new Date().toISOString().slice(0, 10),
+      entryDate:
+        typeof draft.entryDate === "string"
+          ? draft.entryDate
+          : toLocalDateKey(),
       mood: ["great", "good", "neutral", "bad"].includes(draft.mood ?? "")
         ? draft.mood as DiaryMood
         : "neutral",

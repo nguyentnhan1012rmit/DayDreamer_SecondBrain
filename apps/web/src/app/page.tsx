@@ -30,6 +30,8 @@ import {
   type SummaryRecord,
 } from "@/lib/api-client";
 import { readHomeDraft, writeHomeDraft } from "@/lib/home-draft";
+import { loadHomeData } from "@/lib/home-data";
+import { resolveMemoryDate } from "@/lib/memory-date";
 import { MOOD_META } from "@/lib/mood-meta";
 
 const PERSONAL_QUESTIONS = [
@@ -40,7 +42,7 @@ const PERSONAL_QUESTIONS = [
 ];
 
 function getEntryDate(entry: DiaryEntry) {
-  return new Date(entry.createdAt);
+  return resolveMemoryDate(entry);
 }
 
 function getStartOfDay(date = new Date()) {
@@ -205,11 +207,11 @@ export default function Home() {
     let cancelled = false;
     setIsDataLoading(true);
 
-    Promise.all([
-      getDiaryEntries(accessToken, 50),
-      getSummaries(accessToken, { limit: 5 }),
-    ])
-      .then(([nextEntries, nextSummaries]) => {
+    loadHomeData({
+      loadEntries: () => getDiaryEntries(accessToken, 50),
+      loadSummaries: () => getSummaries(accessToken, { limit: 5 }),
+    })
+      .then(({ entries: nextEntries, summaries: nextSummaries }) => {
         if (cancelled) return;
         setEntries(
           [...nextEntries].sort(

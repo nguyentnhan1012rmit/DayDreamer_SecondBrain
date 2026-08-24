@@ -11,11 +11,37 @@ import {
   prepareAudioChunks,
   type PreparedAudioChunk,
 } from "./audio-compression";
-import { transcribeAudioLocally } from "./local-audio-transcription";
+import {
+  assertLocalAudioTranscriptionReady,
+  transcribeAudioLocally,
+} from "./local-audio-transcription";
+import { extractImageTextLocally } from "./local-document-extraction";
 
 export const isAudioMimeType = isAudioAttachmentMimeType;
 
-const MAX_AI_IMAGE_BYTES = 1_000_000;
+export const MAX_AI_IMAGE_REQUEST_BYTES = 1_000_000;
+const AI_IMAGE_JSON_RESERVE_BYTES = 32_000;
+
+type ImageAttachmentExtractionInput = {
+  attachmentId: string;
+  buffer: Buffer;
+  fileName: string;
+  maxOutputTokens: number;
+};
+
+type ImageExtractionDependencies = {
+  extractOcr?: (buffer: Buffer) => Promise<string>;
+  extractVision?: (input: ImageAttachmentExtractionInput) => Promise<string>;
+};
+
+export function estimateImageGatewayRequestBytes(
+  imageByteLength: number,
+  mimeType = "image/jpeg",
+) {
+  const base64Bytes = 4 * Math.ceil(imageByteLength / 3);
+  const dataUrlPrefixBytes = Buffer.byteLength(`data:${mimeType};base64,`);
+  return base64Bytes + dataUrlPrefixBytes + AI_IMAGE_JSON_RESERVE_BYTES;
+}
 
 export async function prepareImageForExtraction(buffer: Buffer) {
   const attempts = [
@@ -23,6 +49,8 @@ export async function prepareImageForExtraction(buffer: Buffer) {
     { maxDimension: 1800, quality: 76 },
     { maxDimension: 1500, quality: 68 },
     { maxDimension: 1200, quality: 58 },
+    { maxDimension: 1000, quality: 50 },
+    { maxDimension: 800, quality: 42 },
   ];
   let optimized = buffer;
 
@@ -39,16 +67,112 @@ export async function prepareImageForExtraction(buffer: Buffer) {
       .jpeg({ quality: attempt.quality, mozjpeg: true })
       .toBuffer();
 
-    if (optimized.length <= MAX_AI_IMAGE_BYTES) break;
+    if (
+      estimateImageGatewayRequestBytes(optimized.length) <=
+      MAX_AI_IMAGE_REQUEST_BYTES
+    ) {
+      break;
+    }
   }
 
-  if (optimized.length > MAX_AI_IMAGE_BYTES) {
+  const estimatedRequestBytes = estimateImageGatewayRequestBytes(
+    optimized.length,
+  );
+  if (estimatedRequestBytes > MAX_AI_IMAGE_REQUEST_BYTES) {
     throw new Error(
-      `Optimized image is still too large (${optimized.length} bytes).`,
+      `Optimized image would create a ${estimatedRequestBytes} byte base64/JSON request, above the ${MAX_AI_IMAGE_REQUEST_BYTES} byte gateway budget.`,
     );
   }
 
   return { buffer: optimized, mimeType: "image/jpeg" };
+}
+
+export async function extractImageAttachmentContent(
+  input: ImageAttachmentExtractionInput,
+  dependencies: ImageExtractionDependencies = {},
+) {
+  const extractOcr = dependencies.extractOcr ?? extractImageTextLocally;
+  const extractVision =
+    dependencies.extractVision ??
+    (async (visionInput: ImageAttachmentExtractionInput) => {
+      const optimizedImage = await prepareImageForExtraction(
+        visionInput.buffer,
+      );
+      return extractAttachmentContent({
+        attachmentId: visionInput.attachmentId,
+        base64Data: optimizedImage.buffer.toString("base64"),
+        mimeType: optimizedImage.mimeType,
+        fileName: visionInput.fileName,
+        maxOutputTokens: visionInput.maxOutputTokens,
+      });
+    });
+
+  let ocrText = "";
+  let visionText = "";
+  let ocrFailure = "";
+  let visionFailure = "";
+
+  try {
+    ocrText = (await extractOcr(input.buffer)).trim();
+  } catch (error) {
+    ocrFailure = toErrorMessage(error);
+  }
+
+  try {
+    visionText = (await extractVision(input)).trim();
+  } catch (error) {
+    visionFailure = toErrorMessage(error);
+  }
+
+  if (ocrText && visionText) {
+    if (ocrText === visionText) return visionText;
+    return `## OCR text\n${ocrText}\n\n## Vision extraction\n${visionText}`;
+  }
+
+  if (visionText) {
+    if (ocrFailure) {
+      console.warn(
+        `[Attachment Extraction] OCR failed for ${input.attachmentId}; using vision extraction: ${ocrFailure}`,
+      );
+    }
+    return visionText;
+  }
+
+  if (ocrText) {
+    if (visionFailure) {
+      console.warn(
+        `[Attachment Extraction] Vision failed for ${input.attachmentId}; using OCR text: ${visionFailure}`,
+      );
+    }
+    return ocrText;
+  }
+
+  throw new Error(
+    [
+      "Image contains no OCR- or vision-readable content.",
+      ocrFailure ? `OCR failed: ${ocrFailure}` : "",
+      visionFailure ? `Vision failed: ${visionFailure}` : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+}
+
+export function getAudioTranscriptionProvider(): "local" | "tuturuuu" {
+  const provider =
+    process.env.AUDIO_TRANSCRIPTION_PROVIDER?.trim().toLowerCase() || "local";
+  if (provider !== "local" && provider !== "tuturuuu") {
+    throw new Error(
+      `Unsupported AUDIO_TRANSCRIPTION_PROVIDER "${provider}". Use "local" or "tuturuuu".`,
+    );
+  }
+  return provider;
+}
+
+export function assertAudioTranscriptionRuntimeReady() {
+  const provider = getAudioTranscriptionProvider();
+  if (provider === "local") assertLocalAudioTranscriptionReady();
+  return provider;
 }
 
 export async function extractAudioAttachmentContent(input: {
@@ -58,20 +182,13 @@ export async function extractAudioAttachmentContent(input: {
   fileName: string;
   maxOutputTokens: number;
 }) {
-  const provider =
-    process.env.AUDIO_TRANSCRIPTION_PROVIDER?.trim().toLowerCase() || "local";
+  const provider = getAudioTranscriptionProvider();
   if (provider === "local") {
     return transcribeAudioLocally({
       buffer: input.buffer,
       fileName: input.fileName,
     });
   }
-  if (provider !== "tuturuuu") {
-    throw new Error(
-      `Unsupported AUDIO_TRANSCRIPTION_PROVIDER "${provider}". Use "local" or "tuturuuu".`,
-    );
-  }
-
   const chunks = await prepareAudioChunks(input.buffer, input.mimeType);
   return transcribeAudioChunks({
     attachmentId: input.attachmentId,
@@ -203,6 +320,10 @@ function isInvalidExtractionResponse(value: string) {
     (normalized.includes("retype") && normalized.includes("question")) ||
     normalized.includes("provide the file again")
   );
+}
+
+function toErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildAudioTranscriptionPrompt(partNumber = 1, partCount = 1) {

@@ -31,7 +31,7 @@ import {
 } from '../auth/user-role';
 
 const DEFAULT_SEARCH_LIMIT = 8;
-const SEARCH_CACHE_PIPELINE_VERSION = 'ai-recall-v11-attachment-media';
+const SEARCH_CACHE_PIPELINE_VERSION = 'ai-recall-v12-scope-isolation';
 const DEFAULT_TUTURUUU_ANSWER_MODEL = 'google/gemini-3.5-flash-lite';
 
 type SearchAuthInput = string | AuthenticatedRequestUser;
@@ -169,11 +169,11 @@ export class SearchService {
       };
 
       // ── Persist to search history (async, non-blocking) ──
-      if (
+      const canCacheExactAnswer =
         this.canUseExactAnswerCache(queryDto) &&
         !includeDebugTrace &&
-        this.isCacheableLiveResult(result, answerMode)
-      ) {
+        this.isCacheableLiveResult(result, answerMode);
+      if (canCacheExactAnswer) {
         setCachedSearchAnswer(
           {
             userId: user.id,
@@ -210,6 +210,14 @@ export class SearchService {
           : null,
         responseLanguage: lang,
         tokenCount: responseAnalytics?.tokenUsage?.totalTokens ?? 0,
+        cacheEligible: canCacheExactAnswer && !timeZone,
+        sourceScope:
+          queryDto.sourceType && queryDto.sourceId
+            ? {
+                sourceType: queryDto.sourceType,
+                sourceId: queryDto.sourceId,
+              }
+            : null,
       }).catch((err) => {
         console.warn('Failed to save search history (non-fatal):', err);
       });
@@ -269,7 +277,7 @@ export class SearchService {
       queryDto.sourceId ||
       queryDto.startDate ||
       queryDto.endDate ||
-      queryDto.maxDistance ||
+      queryDto.maxDistance !== undefined ||
       !this.isDefaultAnswerStrategy(queryDto.answerStrategy) ||
       !this.isDefaultSearchLimit(queryDto.limit)
     );

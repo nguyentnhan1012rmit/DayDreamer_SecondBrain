@@ -7,6 +7,7 @@ import {
   answerSingleDayFastPath,
   answerTemporalRangeFastPath,
   inferRetrievalFilters,
+  mergeRetrievalFilters,
   rerankMemoryHits,
 } from "./answer-memory.ts";
 import {
@@ -18,6 +19,10 @@ import {
   shouldUseAutoFastPath,
 } from "./answer-memory-routing.ts";
 import { detectMemoryIntent } from "./answer-memory-intents.ts";
+import {
+  findDiariesCreatedInRangeWithDifferentEntryDate,
+  retrieveUnindexedDiaryFallbackHits,
+} from "./answer-memory-unindexed.ts";
 import { hasAdequateSemanticSupport } from "./answer-memory-validation.ts";
 import type { AnswerMemoryResult } from "./answer-memory.ts";
 import type { MemorySearchHit } from "./retrieval.ts";
@@ -167,6 +172,50 @@ test("audio attachment questions retrieve today's transcript instead of diary ti
   assert.deepEqual(filters.fileTypePrefixes, ["audio/"]);
   assert.equal(filters.startDate?.toISOString(), "2026-08-22T17:00:00.000Z");
   assert.equal(filters.endDate?.toISOString(), "2026-08-23T16:59:59.999Z");
+});
+
+test("attachment intent requires whole words or phrases", () => {
+  assert.equal(detectMemoryIntent("How do I update my profile?"), "generic");
+  assert.equal(
+    detectMemoryIntent("What progress was documented today?"),
+    "progress",
+  );
+  assert.equal(
+    detectMemoryIntent("What does the uploaded PDF say?"),
+    "attachment",
+  );
+  assert.equal(
+    detectMemoryIntent("Which files and documents did I upload?"),
+    "attachment",
+  );
+});
+
+test("explicit source scope clears conflicting inferred attachment filters", () => {
+  const inferredFilters = inferRetrievalFilters(
+    "What does the uploaded audio from today say?",
+    new Date("2026-08-23T12:16:00.000Z"),
+    "Asia/Ho_Chi_Minh",
+  );
+
+  for (const explicitFilters of [
+    { sourceType: "diary" },
+    { sourceId: "diary-1" },
+  ]) {
+    const mergedFilters = mergeRetrievalFilters(
+      inferredFilters,
+      explicitFilters,
+    );
+
+    assert.equal(mergedFilters.sourceType, explicitFilters.sourceType);
+    assert.equal(mergedFilters.sourceId, explicitFilters.sourceId);
+    assert.equal(mergedFilters.sourceTypes, undefined);
+    assert.equal(mergedFilters.preferredSourceTypes, undefined);
+    assert.equal(mergedFilters.fileTypePrefixes, undefined);
+    assert.equal(
+      mergedFilters.startDate?.toISOString(),
+      "2026-08-22T17:00:00.000Z",
+    );
+  }
 });
 
 test("inferRetrievalFilters prefers reflection chunks for mood questions", () => {
@@ -2699,6 +2748,118 @@ test("answerTemporalRangeFastPath skips analyze blocker questions so Auto can us
   );
 
   assert.equal(result, null);
+});
+
+test("unindexed diary fallback constrains and post-filters exact source scope", async () => {
+  let capturedQuery = "";
+  let capturedValues: unknown[] = [];
+  const fakeDb = {
+    $queryRawUnsafe: async (query: string, ...values: unknown[]) => {
+      capturedQuery = query;
+      capturedValues = values;
+      return [
+        {
+          id: "diary-target",
+          raw_text: "Target diary",
+          entry_date: new Date("2026-07-13T05:00:00.000Z"),
+          created_at: new Date("2026-07-13T06:00:00.000Z"),
+          job_status: "pending",
+        },
+        {
+          id: "diary-other",
+          raw_text: "Other diary",
+          entry_date: new Date("2026-07-13T05:00:00.000Z"),
+          created_at: new Date("2026-07-13T06:00:00.000Z"),
+          job_status: "pending",
+        },
+      ];
+    },
+  };
+
+  const hits = await retrieveUnindexedDiaryFallbackHits(
+    fakeDb as any,
+    "user-1",
+    {
+      sourceType: "diary",
+      sourceId: "diary-target",
+      startDate: new Date("2026-07-13T00:00:00.000Z"),
+      endDate: new Date("2026-07-13T23:59:59.999Z"),
+    },
+  );
+
+  assert.match(capturedQuery, /d\.id::text IN \(\$5::text\)/);
+  assert.deepEqual(capturedValues.slice(4), ["diary-target"]);
+  assert.deepEqual(hits.map((hit) => hit.sourceId), ["diary-target"]);
+});
+
+test("diary fallbacks skip non-diary source scope", async () => {
+  let queryCount = 0;
+  const fakeDb = {
+    $queryRawUnsafe: async () => {
+      queryCount += 1;
+      return [];
+    },
+  };
+  const filters = {
+    sourceType: "attachment",
+    sourceId: "attachment-1",
+    startDate: new Date("2026-07-13T00:00:00.000Z"),
+    endDate: new Date("2026-07-13T23:59:59.999Z"),
+  };
+
+  assert.deepEqual(
+    await retrieveUnindexedDiaryFallbackHits(fakeDb as any, "user-1", filters),
+    [],
+  );
+  assert.deepEqual(
+    await findDiariesCreatedInRangeWithDifferentEntryDate(
+      fakeDb as any,
+      "user-1",
+      filters,
+    ),
+    [],
+  );
+  assert.equal(queryCount, 0);
+});
+
+test("created-date fallback constrains and post-filters exact source scope", async () => {
+  let capturedQuery = "";
+  let capturedValues: unknown[] = [];
+  const fakeDb = {
+    $queryRawUnsafe: async (query: string, ...values: unknown[]) => {
+      capturedQuery = query;
+      capturedValues = values;
+      return [
+        {
+          id: "diary-target",
+          raw_text: "Target diary",
+          entry_date: new Date("2026-07-12T05:00:00.000Z"),
+          created_at: new Date("2026-07-13T06:00:00.000Z"),
+        },
+        {
+          id: "diary-other",
+          raw_text: "Other diary",
+          entry_date: new Date("2026-07-12T05:00:00.000Z"),
+          created_at: new Date("2026-07-13T06:00:00.000Z"),
+        },
+      ];
+    },
+  };
+
+  const rows = await findDiariesCreatedInRangeWithDifferentEntryDate(
+    fakeDb as any,
+    "user-1",
+    {
+      sourceType: "diary",
+      sourceId: "diary-target",
+      startDate: new Date("2026-07-13T00:00:00.000Z"),
+      endDate: new Date("2026-07-13T23:59:59.999Z"),
+    },
+  );
+
+  assert.match(capturedQuery, /d\.id::text IN \(\$4::text\)/);
+  assert.deepEqual(capturedValues.slice(3), ["diary-target"]);
+  assert.deepEqual(rows.map((row) => row.id), ["diary-target"]);
 });
 
 test("answerMemory answers single-day questions from unindexed diary rows without model generation", async () => {

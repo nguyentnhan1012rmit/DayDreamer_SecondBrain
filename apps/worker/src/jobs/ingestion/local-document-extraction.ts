@@ -26,28 +26,59 @@ export async function extractImageTextLocally(buffer: Buffer) {
 
 export async function extractPdfTextLocally(buffer: Buffer) {
   await ensureOfficialPdfModule();
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  const pdfBytes = new Uint8Array(
+    buffer.buffer,
+    buffer.byteOffset,
+    buffer.byteLength,
+  );
+  const pdf = await getDocumentProxy(pdfBytes);
   const extracted = await extractText(pdf, { mergePages: false });
-  const textPages = extracted.text.map(normalizeExtractedText).filter(Boolean);
+  return supplementPdfPagesWithOcr({
+    textPages: extracted.text,
+    pageCount: pdf.numPages,
+    maxOcrPages: getPdfOcrPageLimit(),
+    minTextCharacters: getPdfOcrMinTextCharacters(),
+    ocrPage: async (pageNumber) => {
+      const rendered = await renderPageAsImage(pdf, pageNumber, {
+        canvasImport: () => import("@napi-rs/canvas"),
+        scale: 2,
+      });
+      return extractImageTextLocally(Buffer.from(rendered));
+    },
+  });
+}
 
-  if (textPages.join("\n").length >= 40) {
-    return formatPdfPages(textPages);
+export async function supplementPdfPagesWithOcr(input: {
+  textPages: string[];
+  pageCount: number;
+  maxOcrPages: number;
+  minTextCharacters: number;
+  ocrPage: (pageNumber: number) => Promise<string>;
+}) {
+  const pages = Array.from({ length: input.pageCount }, (_, index) => ({
+    pageNumber: index + 1,
+    text: normalizeExtractedText(input.textPages[index] ?? ""),
+  }));
+  let attemptedOcrPages = 0;
+
+  for (const page of pages) {
+    if (page.text.length >= input.minTextCharacters) continue;
+    if (attemptedOcrPages >= input.maxOcrPages) break;
+    attemptedOcrPages += 1;
+
+    try {
+      const ocrText = normalizeExtractedText(
+        await input.ocrPage(page.pageNumber),
+      );
+      page.text = mergePdfPageText(page.text, ocrText);
+    } catch (error) {
+      console.warn(
+        `[PDF OCR] Page ${page.pageNumber} failed; preserving any embedded text: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
-  const pageCount = Math.min(pdf.numPages, getPdfOcrPageLimit());
-  const ocrPages: string[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-    const rendered = await renderPageAsImage(pdf, pageNumber, {
-      canvasImport: () => import("@napi-rs/canvas"),
-      scale: 2,
-    });
-    if (typeof rendered === "string") continue;
-    const pageText = await extractImageTextLocally(Buffer.from(rendered));
-    if (pageText) ocrPages.push(pageText);
-  }
-
-  return formatPdfPages(ocrPages);
+  return formatPdfPages(pages);
 }
 
 function getOcrWorker() {
@@ -79,9 +110,24 @@ function getPdfOcrPageLimit() {
   return Math.min(Math.max(Math.trunc(configured), 1), 100);
 }
 
-function formatPdfPages(pages: string[]) {
+function getPdfOcrMinTextCharacters() {
+  const configured = Number(process.env.PDF_OCR_MIN_TEXT_CHARACTERS ?? 40);
+  if (!Number.isFinite(configured)) return 40;
+  return Math.min(Math.max(Math.trunc(configured), 1), 1_000);
+}
+
+function mergePdfPageText(embeddedText: string, ocrText: string) {
+  if (!embeddedText) return ocrText;
+  if (!ocrText || embeddedText === ocrText) return embeddedText;
+  return `${embeddedText}\n\n### OCR supplement\n${ocrText}`;
+}
+
+function formatPdfPages(
+  pages: Array<{ pageNumber: number; text: string }>,
+) {
   return pages
-    .map((text, index) => `## Page ${index + 1}\n${text}`)
+    .filter((page) => page.text)
+    .map((page) => `## Page ${page.pageNumber}\n${page.text}`)
     .join("\n\n")
     .trim();
 }

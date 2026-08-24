@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { DiaryService } from './diary.service';
 import { CreateDiaryDto } from './dto/create-diary.dto';
+import { UpdateDiaryDto } from './dto/update-diary.dto';
 import { CopilotDto } from './dto/copilot.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
@@ -75,7 +76,7 @@ export class DiaryController {
   update(
     @Request() req: AuthenticatedRequest,
     @Param('id') id: string,
-    @Body() updateDto: Partial<CreateDiaryDto>,
+    @Body() updateDto: UpdateDiaryDto,
   ) {
     return this.diaryService.update(req.user.userId, id, updateDto);
   }

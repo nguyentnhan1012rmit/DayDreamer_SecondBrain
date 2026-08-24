@@ -4,6 +4,7 @@ import {
   retrieveMemoryLexicalOnly,
   retrieveMemoryWithEmbedding,
   type MemorySearchHit,
+  type RetrievalFilters,
 } from "./retrieval.ts";
 import { createDefaultEmbeddingProvider } from "./embedding.ts";
 import type { MemoryDbClient } from "./types.ts";
@@ -136,8 +137,7 @@ export async function answerMemory(
     inferredFilters,
   );
   const appliedFilters = {
-    ...inferredFilters,
-    ...options.filters,
+    ...mergeRetrievalFilters(inferredFilters, options.filters),
     limit: Math.min(
       Math.max(
         options.limit ?? (broadTemporalSynthesis ? 20 : DEFAULT_RETRIEVAL_CANDIDATE_LIMIT),
@@ -845,6 +845,32 @@ ${languageInstruction}
       }),
     };
   }
+}
+
+export function mergeRetrievalFilters(
+  inferredFilters: RetrievalFilters,
+  explicitFilters: RetrievalFilters | undefined,
+): RetrievalFilters {
+  if (!explicitFilters) return { ...inferredFilters };
+
+  const mergedFilters = { ...inferredFilters };
+  const hasExplicitSourceScope = [
+    "sourceType",
+    "sourceTypes",
+    "sourceId",
+    "sourceIds",
+  ].some((key) => Object.prototype.hasOwnProperty.call(explicitFilters, key));
+
+  if (hasExplicitSourceScope) {
+    delete mergedFilters.sourceType;
+    delete mergedFilters.sourceTypes;
+    delete mergedFilters.sourceId;
+    delete mergedFilters.sourceIds;
+    delete mergedFilters.fileTypePrefixes;
+    delete mergedFilters.preferredSourceTypes;
+  }
+
+  return { ...mergedFilters, ...explicitFilters };
 }
 
 function dedupeMemoryHits(chunks: MemorySearchHit[]): MemorySearchHit[] {

@@ -128,21 +128,30 @@ function isDriveIntent(normalizedQuestion: string): boolean {
 }
 
 function isAttachmentIntent(normalizedQuestion: string): boolean {
-  return includesAny(normalizedQuestion, [
+  return includesAnyWholePhrase(normalizedQuestion, [
     "attachment",
     "attachments",
     "attach",
     "attached",
+    "attaching",
     "audio",
     "audio file",
+    "audio files",
     "mp3",
     "recording",
+    "recordings",
     "transcript",
+    "transcripts",
     "file",
+    "files",
     "pdf",
+    "pdfs",
     "document",
+    "documents",
     "upload",
+    "uploads",
     "uploaded",
+    "uploading",
     "tệp",
     "tep",
     "file đính kèm",
@@ -566,6 +575,27 @@ export function normalizeForIntent(value: string): string {
 
 export function includesAny(value: string, needles: string[]): boolean {
   return needles.some((needle) => value.includes(normalizeForIntent(needle)));
+}
+
+function includesAnyWholePhrase(value: string, needles: string[]): boolean {
+  const searchable = normalizeIntentTokens(value);
+  if (!searchable) return false;
+
+  const paddedSearchable = ` ${searchable} `;
+  return needles.some((needle) => {
+    const normalizedNeedle = normalizeIntentTokens(needle);
+    return (
+      normalizedNeedle.length > 0 &&
+      paddedSearchable.includes(` ${normalizedNeedle} `)
+    );
+  });
+}
+
+function normalizeIntentTokens(value: string): string {
+  return normalizeForIntent(value)
+    .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function getEvidenceKeywords(intent: MemoryIntent): string[] {

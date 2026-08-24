@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
@@ -7,8 +7,33 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const DEFAULT_WHISPER_MODEL = "Xenova/whisper-tiny";
 const WHISPER_SAMPLE_RATE = 16_000;
+const BYTES_PER_FLOAT_32 = 4;
+const DEFAULT_AUDIO_MAX_DURATION_SECONDS = 30 * 60;
+const DEFAULT_FFMPEG_TIMEOUT_MS = 2 * 60_000;
+const FFMPEG_DURATION_PROBE_SECONDS = 1;
 
 let transcriberPromise: Promise<any> | undefined;
+
+export function assertLocalAudioTranscriptionReady() {
+  const result = spawnSync("ffmpeg", ["-version"], {
+    encoding: "utf8",
+    timeout: 5_000,
+    windowsHide: true,
+  });
+
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message || result.stderr?.trim();
+    throw new Error(
+      [
+        'AUDIO_TRANSCRIPTION_PROVIDER="local" requires ffmpeg on PATH.',
+        "Install ffmpeg or use the official worker image, which includes it.",
+        detail ? `ffmpeg check failed: ${detail}` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    );
+  }
+}
 
 export async function transcribeAudioLocally(input: {
   buffer: Buffer;
@@ -57,39 +82,113 @@ async function convertToWhisperPcm(buffer: Buffer, fileName: string) {
   const extension = safeAudioExtension(fileName);
   const inputPath = join(tempDir, `input${extension}`);
   const outputPath = join(tempDir, "audio.f32le");
+  const maxDurationSeconds = getAudioMaxDurationSeconds();
+  const ffmpegTimeoutMs = getFfmpegTimeoutMs();
 
   try {
     await writeFile(inputPath, buffer);
-    await execFileAsync("ffmpeg", [
-      "-y",
-      "-v",
-      "error",
-      "-i",
-      inputPath,
-      "-vn",
-      "-ac",
-      "1",
-      "-ar",
-      String(WHISPER_SAMPLE_RATE),
-      "-acodec",
-      "pcm_f32le",
-      "-f",
-      "f32le",
-      outputPath,
-    ]);
-    const pcm = await readFile(outputPath);
-    const copy = pcm.buffer.slice(
-      pcm.byteOffset,
-      pcm.byteOffset + pcm.byteLength,
+    await execFileAsync(
+      "ffmpeg",
+      [
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        inputPath,
+        "-t",
+        String(maxDurationSeconds + FFMPEG_DURATION_PROBE_SECONDS),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        String(WHISPER_SAMPLE_RATE),
+        "-acodec",
+        "pcm_f32le",
+        "-f",
+        "f32le",
+        outputPath,
+      ],
+      {
+        timeout: ffmpegTimeoutMs,
+        windowsHide: true,
+      },
     );
-    return new Float32Array(copy);
+    const pcm = await readFile(outputPath);
+    assertPcmDurationWithinLimit(pcm.byteLength, maxDurationSeconds);
+    return float32ViewFromBuffer(pcm);
   } catch (error) {
+    if (isTimedOutProcessError(error)) {
+      throw new Error(
+        `Local audio preparation failed: ffmpeg exceeded its ${ffmpegTimeoutMs} ms runtime limit.`,
+      );
+    }
     throw new Error(
       `Local audio preparation failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+export function assertPcmDurationWithinLimit(
+  byteLength: number,
+  maxDurationSeconds: number,
+) {
+  const maxPcmBytes =
+    maxDurationSeconds * WHISPER_SAMPLE_RATE * BYTES_PER_FLOAT_32;
+  if (byteLength > maxPcmBytes) {
+    throw new Error(
+      `Audio exceeds the ${maxDurationSeconds} second local transcription limit. Set AUDIO_TRANSCRIPTION_MAX_DURATION_SECONDS to a safe higher value if needed.`,
+    );
+  }
+  if (byteLength % BYTES_PER_FLOAT_32 !== 0) {
+    throw new Error("ffmpeg returned an invalid float32 PCM byte length.");
+  }
+}
+
+export function float32ViewFromBuffer(buffer: Buffer) {
+  if (
+    buffer.byteOffset % BYTES_PER_FLOAT_32 === 0 &&
+    buffer.byteLength % BYTES_PER_FLOAT_32 === 0
+  ) {
+    return new Float32Array(
+      buffer.buffer,
+      buffer.byteOffset,
+      buffer.byteLength / BYTES_PER_FLOAT_32,
+    );
+  }
+
+  const aligned = new Uint8Array(buffer.byteLength);
+  aligned.set(buffer);
+  return new Float32Array(aligned.buffer);
+}
+
+function getAudioMaxDurationSeconds() {
+  const configured = Number(
+    process.env.AUDIO_TRANSCRIPTION_MAX_DURATION_SECONDS ??
+      DEFAULT_AUDIO_MAX_DURATION_SECONDS,
+  );
+  if (!Number.isFinite(configured)) return DEFAULT_AUDIO_MAX_DURATION_SECONDS;
+  return Math.min(Math.max(Math.trunc(configured), 30), 2 * 60 * 60);
+}
+
+function getFfmpegTimeoutMs() {
+  const configured = Number(
+    process.env.AUDIO_TRANSCRIPTION_FFMPEG_TIMEOUT_MS ??
+      DEFAULT_FFMPEG_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured)) return DEFAULT_FFMPEG_TIMEOUT_MS;
+  return Math.min(Math.max(Math.trunc(configured), 10_000), 10 * 60_000);
+}
+
+function isTimedOutProcessError(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      ("killed" in error || "code" in error) &&
+      ((error as { killed?: unknown }).killed === true ||
+        (error as { code?: unknown }).code === "ETIMEDOUT"),
+  );
 }
 
 function safeAudioExtension(fileName: string) {

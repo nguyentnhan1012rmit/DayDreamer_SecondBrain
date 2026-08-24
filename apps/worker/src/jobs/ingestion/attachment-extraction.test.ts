@@ -3,7 +3,10 @@ import test from "node:test";
 import sharp from "sharp";
 import {
   extractAttachmentContent,
+  extractImageAttachmentContent,
+  estimateImageGatewayRequestBytes,
   isAudioMimeType,
+  MAX_AI_IMAGE_REQUEST_BYTES,
   prepareImageForExtraction,
   transcribeAudioChunks,
 } from "./attachment-extraction.ts";
@@ -48,10 +51,75 @@ test("prepareImageForExtraction keeps the AI request payload below its size budg
   const result = await prepareImageForExtraction(source);
 
   assert.equal(result.mimeType, "image/jpeg");
-  assert.ok(result.buffer.length <= 1_000_000);
+  assert.ok(
+    estimateImageGatewayRequestBytes(result.buffer.length, result.mimeType) <=
+      MAX_AI_IMAGE_REQUEST_BYTES,
+  );
+  assert.ok(
+    estimateImageGatewayRequestBytes(750_000, result.mimeType) >
+      MAX_AI_IMAGE_REQUEST_BYTES,
+    "raw bytes that fit under 1 MB must still account for base64 and JSON overhead",
+  );
   const metadata = await sharp(result.buffer).metadata();
   assert.ok((metadata.width ?? 0) <= 2200);
   assert.ok((metadata.height ?? 0) <= 2200);
+});
+
+test("image extraction supplements OCR with vision output", async () => {
+  const calls: string[] = [];
+  const result = await extractImageAttachmentContent(
+    {
+      attachmentId: "image-supplement",
+      buffer: Buffer.from("image"),
+      fileName: "whiteboard.jpg",
+      maxOutputTokens: 800,
+    },
+    {
+      extractOcr: async () => {
+        calls.push("ocr");
+        return "Launch checklist";
+      },
+      extractVision: async () => {
+        calls.push("vision");
+        return "A whiteboard with three checked tasks.";
+      },
+    },
+  );
+
+  assert.deepEqual(calls, ["ocr", "vision"]);
+  assert.match(result, /## OCR text\nLaunch checklist/);
+  assert.match(
+    result,
+    /## Vision extraction\nA whiteboard with three checked tasks\./,
+  );
+});
+
+test("image extraction falls back to vision when OCR fails", async () => {
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (message?: unknown) => warnings.push(String(message));
+
+  try {
+    const result = await extractImageAttachmentContent(
+      {
+        attachmentId: "image-vision-fallback",
+        buffer: Buffer.from("image"),
+        fileName: "photo.jpg",
+        maxOutputTokens: 800,
+      },
+      {
+        extractOcr: async () => {
+          throw new Error("OCR worker unavailable");
+        },
+        extractVision: async () => "Two people standing beside a bicycle.",
+      },
+    );
+
+    assert.equal(result, "Two people standing beside a bicycle.");
+    assert.match(warnings.join("\n"), /OCR worker unavailable/);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("extractAttachmentContent rejects provider placeholders", async () => {

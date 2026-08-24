@@ -31,6 +31,7 @@ import type {
   UpdateDiaryPayload,
 } from "@/lib/api-client";
 import { MOOD_META } from "@/lib/mood-meta";
+import { resolveMemoryDate } from "@/lib/memory-date";
 
 type DiaryEntry = {
   id: string;
@@ -152,10 +153,6 @@ function formatEventTime(event: DiaryCalendarEvent) {
   const start = new Date(event.startTime);
   const end = new Date(event.endTime);
   return `${start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} - ${end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-}
-
-function getEntryActivityDate(entry: DiaryEntry, isAdmin: boolean) {
-  return isAdmin ? (entry.entryDate ?? entry.createdAt) : entry.createdAt;
 }
 
 function isDifferentTimestamp(first: Date | string, second: Date | string) {
@@ -372,7 +369,7 @@ function buildRelatedMemoryMap(entries: DiaryEntry[]) {
     entry,
     words: getRelatedMemoryWords(entry),
     tags: new Set((entry.tags ?? []).map((tag) => tag.toLocaleLowerCase())),
-    timestamp: new Date(entry.createdAt).getTime(),
+    timestamp: resolveMemoryDate(entry).getTime(),
   }));
 
   return new Map(
@@ -412,12 +409,12 @@ function buildRelatedMemoryMap(entries: DiaryEntry[]) {
           if (second.score !== first.score) return second.score - first.score;
           return (
             Math.abs(
-              new Date(profile.entry.createdAt).getTime() -
-                new Date(first.entry.createdAt).getTime(),
+              resolveMemoryDate(profile.entry).getTime() -
+                resolveMemoryDate(first.entry).getTime(),
             ) -
             Math.abs(
-              new Date(profile.entry.createdAt).getTime() -
-                new Date(second.entry.createdAt).getTime(),
+              resolveMemoryDate(profile.entry).getTime() -
+                resolveMemoryDate(second.entry).getTime(),
             )
           );
         });
@@ -482,7 +479,7 @@ export function TimelineList({
     const groupsByKey = new Map<string, TimelineGroup>();
 
     paginatedEntries.forEach((entry, index) => {
-      const groupMeta = getTimelineGroup(getEntryActivityDate(entry, isAdmin));
+      const groupMeta = getTimelineGroup(resolveMemoryDate(entry));
       let group = groupsByKey.get(groupMeta.key);
       if (!group) {
         group = { ...groupMeta, items: [] };
@@ -493,7 +490,7 @@ export function TimelineList({
     });
 
     return groups;
-  }, [isAdmin, paginatedEntries]);
+  }, [paginatedEntries]);
 
   useEffect(() => {
     const entryId = pendingScrollEntryId.current;
@@ -817,7 +814,7 @@ export function TimelineList({
               ) : null}
               <ul className="space-y-4">
                 {group.items.map(({ entry, index }) => {
-                  const activityDate = getEntryActivityDate(entry, isAdmin);
+                  const activityDate = resolveMemoryDate(entry);
                   const showCreatedDate = isDifferentTimestamp(
                     activityDate,
                     entry.createdAt,
@@ -1389,7 +1386,9 @@ export function TimelineList({
                                     </span>
                                     <span className="mt-0.5 block truncate text-xs text-slate-400 dark:text-slate-500">
                                       {related.reason} ·{" "}
-                                      {formatDiaryDate(related.entry.createdAt)}
+                                      {formatDiaryDate(
+                                        resolveMemoryDate(related.entry),
+                                      )}
                                     </span>
                                   </span>
                                   <ArrowRight
