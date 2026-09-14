@@ -19,10 +19,12 @@ export class DriveController {
     @Req() req,
     @Query('limit') limit?: string,
     @Query('q') query?: string,
+    @Query('pageToken') pageToken?: string,
   ) {
     return this.driveService.listImportCandidates(req.user.userId, {
       limit: this.parseFileLimit(limit),
       query,
+      pageToken,
     });
   }
 

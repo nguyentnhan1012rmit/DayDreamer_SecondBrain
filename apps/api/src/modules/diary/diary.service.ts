@@ -4,22 +4,45 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { generateAiText, getTuturuuuAnswerModel } from '@second-brain/ai';
-import { deleteMemoryChunksForSource } from '@second-brain/db';
+import {
+  generateAiText,
+  getSummaryPeriod,
+  getTuturuuuAnswerModel,
+} from '@second-brain/ai';
+import {
+  deleteMemoryChunksForSource,
+  markMemorySourcesChanged,
+  Prisma,
+} from '@second-brain/db';
 import { isAttachmentExtractionFallback } from '@second-brain/shared';
 import { invalidateUserSearchCache } from '../../common/cache/search-answer-cache';
 import { PrismaService } from '../../prisma/prisma.service'; // Adjust path based on your setup
-import { StorageService } from '../../storage/storage.service';
 import { CreateDiaryDto, DIARY_MOODS } from './dto/create-diary.dto';
 
 type DiaryMood = (typeof DIARY_MOODS)[number];
+type DiaryCursor = { createdAt: string; id: string };
+type AttachmentJob = {
+  source_id: string;
+  status: string;
+  error: string | null;
+  retry_count: number;
+  updated_at: Date;
+};
+type DiaryStatisticsRow = {
+  totalEntries: number;
+  activeDays: number;
+  totalWords: number;
+  moodCounts: Partial<Record<DiaryMood, number>> | null;
+  topTags: Array<{ tag: string; count: number }> | null;
+  days: Array<{ date: string; entryCount: number; wordCount: number }> | null;
+  availableYears: number[] | null;
+};
+
+const DEFAULT_DIARY_PAGE_SIZE = 25;
 
 @Injectable()
 export class DiaryService {
-  constructor(
-    private prisma: PrismaService,
-    private storageService: StorageService,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   async create(userId: string, dto: CreateDiaryDto) {
     const user = await this.prisma.user.findUnique({
@@ -49,28 +72,70 @@ export class DiaryService {
         sourceId: created.id,
         payload: { sourceTitle: dto.title, mood, tags },
       });
+      await markMemorySourcesChanged(tx as any, {
+        userId: user.id,
+        occurredFrom: created.entry_date,
+        occurredTo: created.entry_date,
+      });
 
       return created;
     });
 
     return {
-      ...(await this.toClientEntry(entry)),
+      ...this.toClientEntry(entry),
       memoryIndexed: false,
       memoryIndexingStatus: 'queued',
       memoryChunkCount: 0,
     };
   }
 
-  async findAll(userId: string, options: { limit?: number } = {}) {
+  async findAll(
+    userId: string,
+    options: {
+      limit?: number;
+      cursor?: string;
+      startDate?: string;
+      endDate?: string;
+    } = {},
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { supabaseId: userId },
       select: { id: true },
     });
 
-    if (!user) return [];
+    if (!user) return { entries: [], nextCursor: null, hasMore: false };
+
+    const limit = options.limit ?? DEFAULT_DIARY_PAGE_SIZE;
+    const cursor = options.cursor
+      ? this.decodeCursor(options.cursor)
+      : undefined;
+    const cursorDate = cursor ? new Date(cursor.createdAt) : undefined;
+    const startDate = this.parseOptionalDate(options.startDate, 'startDate');
+    const endDate = this.parseOptionalDate(options.endDate, 'endDate');
+    if (startDate && endDate && startDate > endDate) {
+      throw new BadRequestException('startDate must be before endDate');
+    }
 
     const entries = await this.prisma.diaryEntry.findMany({
-      where: { user_id: user.id },
+      where: {
+        user_id: user.id,
+        ...(startDate || endDate
+          ? {
+              entry_date: {
+                ...(startDate ? { gte: startDate } : {}),
+                ...(endDate ? { lte: endDate } : {}),
+              },
+            }
+          : {}),
+        ...(cursor && cursorDate
+          ? {
+              OR: [
+                { created_at: { lt: cursorDate } },
+                { created_at: cursorDate, id: { lt: cursor.id } },
+              ],
+            }
+          : {}),
+      },
       select: {
         id: true,
         raw_text: true,
@@ -86,6 +151,9 @@ export class DiaryService {
             storage_path: true,
             file_type: true,
             extracted_text: true,
+            extraction_status: true,
+            extraction_completeness: true,
+            extraction_error: true,
             created_at: true,
           },
           orderBy: { created_at: 'asc' },
@@ -101,11 +169,142 @@ export class DiaryService {
           orderBy: { start_time: 'asc' },
         },
       },
-      orderBy: [{ entry_date: 'desc' }, { created_at: 'desc' }],
-      take: options.limit ?? 100,
+      orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
     });
 
-    return Promise.all(entries.map((entry) => this.toClientEntry(entry)));
+    const hasMore = entries.length > limit;
+    const pageEntries = hasMore ? entries.slice(0, limit) : entries;
+    const jobsByAttachmentId = await this.loadAttachmentJobs(
+      pageEntries.flatMap((entry) => entry.attachments ?? []),
+    );
+    const lastEntry = pageEntries.at(-1);
+
+    return {
+      entries: pageEntries.map((entry) =>
+        this.toClientEntry(entry, jobsByAttachmentId),
+      ),
+      nextCursor:
+        hasMore && lastEntry
+          ? this.encodeCursor({
+              createdAt: lastEntry.created_at.toISOString(),
+              id: lastEntry.id,
+            })
+          : null,
+      hasMore,
+    };
+  }
+
+  async getStatistics(
+    userId: string,
+    options: {
+      period: 'weekly' | 'yearly';
+      anchor?: string;
+      timeZone?: string;
+    },
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { supabaseId: userId },
+      select: { id: true },
+    });
+    const anchor = options.anchor ? new Date(options.anchor) : new Date();
+    if (!Number.isFinite(anchor.getTime())) {
+      throw new BadRequestException('Invalid statistics anchor date');
+    }
+    const period = getSummaryPeriod(options.period, anchor, options.timeZone);
+
+    if (!user) {
+      return this.emptyStatistics(options.period, period);
+    }
+
+    const rows = await this.prisma.$queryRaw<DiaryStatisticsRow[]>(Prisma.sql`
+      WITH filtered AS (
+        SELECT
+          raw_text,
+          mood,
+          tags,
+          to_char(entry_date AT TIME ZONE ${period.timeZone}, 'YYYY-MM-DD') AS local_date,
+          CASE
+            WHEN btrim(raw_text) = '' THEN 0
+            ELSE cardinality(regexp_split_to_array(btrim(raw_text), '[[:space:]]+'))
+          END AS word_count
+        FROM diary_entries
+        WHERE user_id = ${user.id}::text
+          AND entry_date >= ${period.start}
+          AND entry_date <= ${period.end}
+      ),
+      day_stats AS (
+        SELECT
+          local_date,
+          COUNT(*)::int AS entry_count,
+          COALESCE(SUM(word_count), 0)::int AS word_count
+        FROM filtered
+        GROUP BY local_date
+      ),
+      mood_stats AS (
+        SELECT mood, COUNT(*)::int AS count
+        FROM filtered
+        WHERE mood IN ('great', 'good', 'neutral', 'bad')
+        GROUP BY mood
+      ),
+      tag_stats AS (
+        SELECT expanded.tag, COUNT(*)::int AS count
+        FROM filtered
+        CROSS JOIN LATERAL unnest(tags) AS expanded(tag)
+        GROUP BY expanded.tag
+        ORDER BY count DESC, expanded.tag ASC
+        LIMIT 8
+      )
+      SELECT
+        (SELECT COUNT(*)::int FROM filtered) AS "totalEntries",
+        (SELECT COUNT(*)::int FROM day_stats) AS "activeDays",
+        (SELECT COALESCE(SUM(word_count), 0)::int FROM filtered) AS "totalWords",
+        (SELECT COALESCE(jsonb_object_agg(mood, count), '{}'::jsonb) FROM mood_stats) AS "moodCounts",
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object('tag', tag, 'count', count) ORDER BY count DESC, tag ASC), '[]'::jsonb) FROM tag_stats) AS "topTags",
+        (SELECT COALESCE(jsonb_agg(jsonb_build_object('date', local_date, 'entryCount', entry_count, 'wordCount', word_count) ORDER BY local_date ASC), '[]'::jsonb) FROM day_stats) AS days,
+        (
+          SELECT COALESCE(jsonb_agg(year ORDER BY year DESC), '[]'::jsonb)
+          FROM (
+            SELECT DISTINCT EXTRACT(YEAR FROM entry_date AT TIME ZONE ${period.timeZone})::int AS year
+            FROM diary_entries
+            WHERE user_id = ${user.id}::text
+          ) available_years
+        ) AS "availableYears"
+    `);
+    const aggregate = rows[0];
+    const moodCounts: Record<DiaryMood, number> = {
+      great: 0,
+      good: 0,
+      neutral: 0,
+      bad: 0,
+      ...(aggregate?.moodCounts ?? {}),
+    };
+    const totalEntries = aggregate?.totalEntries ?? 0;
+    const activeDays = aggregate?.activeDays ?? 0;
+    const totalWords = aggregate?.totalWords ?? 0;
+
+    return {
+      period: options.period,
+      periodStart: period.start.toISOString(),
+      periodEnd: period.end.toISOString(),
+      timeZone: period.timeZone,
+      totalEntries,
+      activeDays,
+      totalWords,
+      averageWordsPerActiveDay: Math.round(
+        totalWords / Math.max(activeDays, 1),
+      ),
+      moodCounts,
+      topTags: aggregate?.topTags ?? [],
+      days: aggregate?.days ?? [],
+      availableYears:
+        Array.from(
+          new Set([
+            Number(period.localStart.slice(0, 4)),
+            ...(aggregate?.availableYears ?? []),
+          ]),
+        ).sort((left, right) => right - left),
+    };
   }
 
   async findOne(userId: string, id: string) {
@@ -128,7 +327,8 @@ export class DiaryService {
       },
     });
     if (!entry) throw new NotFoundException('Diary entry not found');
-    return this.toClientEntry(entry);
+    const jobs = await this.loadAttachmentJobs(entry.attachments ?? []);
+    return this.toClientEntry(entry, jobs);
   }
 
   async update(userId: string, id: string, dto: Partial<CreateDiaryDto>) {
@@ -136,7 +336,7 @@ export class DiaryService {
       userId,
       id,
     );
-    const existingClientEntry = await this.toClientEntry(existingEntry);
+    const existingClientEntry = this.toClientEntry(existingEntry);
     const title = dto.title ?? existingClientEntry.title;
     const content = dto.content ?? existingClientEntry.content;
     const rawText = this.buildRawText(title, content);
@@ -166,12 +366,23 @@ export class DiaryService {
           tags: tags ?? existingClientEntry.tags,
         },
       });
+      await markMemorySourcesChanged(tx as any, {
+        userId: user.id,
+        occurredFrom:
+          existingEntry.entry_date < updated.entry_date
+            ? existingEntry.entry_date
+            : updated.entry_date,
+        occurredTo:
+          existingEntry.entry_date > updated.entry_date
+            ? existingEntry.entry_date
+            : updated.entry_date,
+      });
 
       return updated;
     });
 
     return {
-      ...(await this.toClientEntry(entry)),
+      ...this.toClientEntry(entry),
       memoryIndexed: false,
       memoryIndexingStatus: 'queued',
       memoryChunkCount: 0,
@@ -241,6 +452,7 @@ export class DiaryService {
         retry_count: 0,
         error: null,
         payload: input.payload ?? {},
+        generation: { increment: 1 },
         run_after: new Date(),
         locked_at: null,
         locked_by: null,
@@ -270,6 +482,15 @@ export class DiaryService {
 
   private buildRawText(title: string, content: string) {
     return `${title.trim()}\n\n${content.trim()}`;
+  }
+
+  private parseOptionalDate(value: string | undefined, label: string) {
+    if (!value) return undefined;
+    const parsed = new Date(value);
+    if (!Number.isFinite(parsed.getTime())) {
+      throw new BadRequestException(`Invalid ${label}`);
+    }
+    return parsed;
   }
 
   private normalizeMood(value?: string | null): DiaryMood | null {
@@ -305,30 +526,36 @@ export class DiaryService {
     return normalizedTags;
   }
 
-  private async toClientEntry(entry: {
-    id: string;
-    raw_text: string;
-    status: string;
-    mood?: string | null;
-    tags?: string[] | null;
-    created_at: Date;
-    updated_at: Date;
-    entry_date?: Date | null;
-    attachments?: {
+  private toClientEntry(
+    entry: {
       id: string;
-      storage_path: string;
-      file_type: string;
-      extracted_text: string | null;
+      raw_text: string;
+      status: string;
+      mood?: string | null;
+      tags?: string[] | null;
       created_at: Date;
-    }[];
-    calendar_events?: {
-      id: string;
-      title: string;
-      start_time: Date;
-      end_time: Date;
-      html_link?: string | null;
-    }[];
-  }) {
+      updated_at: Date;
+      entry_date?: Date | null;
+      attachments?: {
+        id: string;
+        storage_path: string;
+        file_type: string;
+        extracted_text: string | null;
+        extraction_status?: string;
+        extraction_completeness?: number | null;
+        extraction_error?: string | null;
+        created_at: Date;
+      }[];
+      calendar_events?: {
+        id: string;
+        title: string;
+        start_time: Date;
+        end_time: Date;
+        html_link?: string | null;
+      }[];
+    },
+    jobsByAttachmentId = new Map<string, AttachmentJob>(),
+  ) {
     const trimmedText = entry.raw_text.trim();
 
     let title = 'Untitled';
@@ -358,7 +585,10 @@ export class DiaryService {
       }
     }
 
-    const attachments = await this.toClientAttachments(entry.attachments ?? []);
+    const attachments = this.toClientAttachments(
+      entry.attachments ?? [],
+      jobsByAttachmentId,
+    );
 
     return {
       id: entry.id,
@@ -381,16 +611,60 @@ export class DiaryService {
     };
   }
 
-  private async toClientAttachments(
+  private toClientAttachments(
     attachments: Array<{
       id: string;
       storage_path: string;
       file_type: string;
       extracted_text: string | null;
+      extraction_status?: string;
+      extraction_completeness?: number | null;
+      extraction_error?: string | null;
       created_at: Date;
     }>,
+    jobsBySourceId: Map<string, AttachmentJob>,
   ) {
     if (!attachments.length) return [];
+
+    return attachments.map((attachment) => {
+      const extractedText = attachment.extracted_text?.trim() ?? '';
+      const extractionFailed =
+        attachment.extraction_status === 'failed' ||
+        isAttachmentExtractionFallback(extractedText);
+      const usableExtractedText = extractionFailed ? '' : extractedText;
+      const job = jobsBySourceId.get(attachment.id);
+
+      return {
+        id: attachment.id,
+        fileType: attachment.file_type,
+        fileName: this.getStoredFileName(attachment.storage_path),
+        extractionStatus: extractionFailed
+          ? 'failed'
+          : usableExtractedText
+            ? 'extracted'
+            : 'pending',
+        extractionCompleteness: attachment.extraction_completeness ?? undefined,
+        extractedTextPreview: usableExtractedText
+          ? usableExtractedText.slice(0, 800)
+          : undefined,
+        extractedCharacterCount: usableExtractedText.length,
+        indexingStatus: extractionFailed
+          ? 'failed'
+          : (job?.status ?? 'unknown'),
+        indexingError: extractionFailed
+          ? attachment.extraction_error ?? 'AI could not read this file. Retry the scan to extract its real content.'
+          : (job?.error ?? null),
+        retryCount: job?.retry_count ?? 0,
+        updatedAt: (job?.updated_at ?? attachment.created_at).toISOString(),
+        createdAt: attachment.created_at.toISOString(),
+      };
+    });
+  }
+
+  private async loadAttachmentJobs(
+    attachments: Array<{ id: string }>,
+  ): Promise<Map<string, AttachmentJob>> {
+    if (!attachments.length) return new Map();
 
     const jobs = await this.prisma.indexingOutbox.findMany({
       where: {
@@ -406,44 +680,50 @@ export class DiaryService {
         updated_at: true,
       },
     });
-    const jobsBySourceId = new Map(jobs.map((job) => [job.source_id, job]));
 
-    return Promise.all(
-      attachments.map(async (attachment) => {
-        const extractedText = attachment.extracted_text?.trim() ?? '';
-        const extractionFailed = isAttachmentExtractionFallback(extractedText);
-        const usableExtractedText = extractionFailed ? '' : extractedText;
-        const signedUrl = await this.storageService
-          .createSignedUrl('attachments-bucket', attachment.storage_path)
-          .catch(() => undefined);
-        const job = jobsBySourceId.get(attachment.id);
+    return new Map(jobs.map((job) => [job.source_id, job]));
+  }
 
-        return {
-          id: attachment.id,
-          fileType: attachment.file_type,
-          fileName: this.getStoredFileName(attachment.storage_path),
-          signedUrl,
-          extractionStatus: extractionFailed
-            ? 'failed'
-            : usableExtractedText
-              ? 'extracted'
-              : 'pending',
-          extractedTextPreview: usableExtractedText
-            ? usableExtractedText.slice(0, 800)
-            : undefined,
-          extractedCharacterCount: usableExtractedText.length,
-          indexingStatus: extractionFailed
-            ? 'failed'
-            : (job?.status ?? 'unknown'),
-          indexingError: extractionFailed
-            ? 'AI could not read this file. Retry the scan to extract its real content.'
-            : (job?.error ?? null),
-          retryCount: job?.retry_count ?? 0,
-          updatedAt: (job?.updated_at ?? attachment.created_at).toISOString(),
-          createdAt: attachment.created_at.toISOString(),
-        };
-      }),
-    );
+  private encodeCursor(cursor: DiaryCursor) {
+    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+  }
+
+  private decodeCursor(value: string): DiaryCursor {
+    try {
+      const decoded = JSON.parse(
+        Buffer.from(value, 'base64url').toString('utf8'),
+      ) as Partial<DiaryCursor>;
+      if (
+        typeof decoded.id !== 'string' ||
+        typeof decoded.createdAt !== 'string' ||
+        !Number.isFinite(new Date(decoded.createdAt).getTime())
+      ) {
+        throw new Error('Invalid cursor payload');
+      }
+      return { id: decoded.id, createdAt: decoded.createdAt };
+    } catch {
+      throw new BadRequestException('Invalid diary cursor');
+    }
+  }
+
+  private emptyStatistics(
+    type: 'weekly' | 'yearly',
+    period: ReturnType<typeof getSummaryPeriod>,
+  ) {
+    return {
+      period: type,
+      periodStart: period.start.toISOString(),
+      periodEnd: period.end.toISOString(),
+      timeZone: period.timeZone,
+      totalEntries: 0,
+      activeDays: 0,
+      totalWords: 0,
+      averageWordsPerActiveDay: 0,
+      moodCounts: { great: 0, good: 0, neutral: 0, bad: 0 },
+      topTags: [],
+      days: [],
+      availableYears: [Number(period.localStart.slice(0, 4))],
+    };
   }
 
   private getStoredFileName(storagePath: string) {

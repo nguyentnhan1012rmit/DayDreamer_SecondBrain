@@ -27,15 +27,40 @@ const requiredTables = [
   'google_connections',
   'search_history',
   'indexing_outbox',
+  'storage_deletion_outbox',
   'worker_heartbeats',
 ] as const;
 
 const requiredColumns: Record<string, readonly string[]> = {
   users: ['supabaseId', 'role', 'google_access_token', 'google_refresh_token'],
   diary_entries: ['entry_date', 'mood', 'tags'],
-  memory_chunks: ['chunk_index', 'chunk_type', 'occurred_at', 'embedding'],
+  memory_chunks: [
+    'chunk_index',
+    'chunk_type',
+    'occurred_at',
+    'embedding',
+    'search_document',
+  ],
   indexing_outbox: ['status', 'retry_count', 'run_after', 'locked_at', 'locked_by'],
   google_connections: ['source', 'connected', 'last_error', 'sync_cursor'],
+  calendar_events: ['content_hash'],
+  gmail_messages: ['history_id', 'content_hash'],
+  google_drive_files: [
+    'content_hash',
+    'extraction_status',
+    'extraction_completeness',
+    'extraction_error',
+    'extraction_attempts',
+    'extraction_updated_at',
+  ],
+  attachments: [
+    'content_hash',
+    'extraction_status',
+    'extraction_completeness',
+    'extraction_error',
+    'extraction_attempts',
+    'extraction_updated_at',
+  ],
 };
 
 const requiredIndexes = [
@@ -47,6 +72,8 @@ const requiredIndexes = [
   'indexing_outbox_processing_lease_idx',
   'google_connections_user_source_key',
   'worker_heartbeats_heartbeat_at_idx',
+  'google_drive_files_user_extraction_status_idx',
+  'storage_deletion_outbox_status_run_after_idx',
 ] as const;
 
 function fail(message: string): never {

@@ -1,5 +1,6 @@
 import { buildCitations } from "./answer-utils.ts";
 import type {
+  AnswerMemoryResult,
   AnswerStrategy,
   MemoryIntent,
 } from "./answer-memory-types.ts";
@@ -15,6 +16,53 @@ import {
 } from "./answer-memory-intents.ts";
 import { selectIntentEvidenceSources, isEvidenceFirstIntent } from "./answer-memory-evidence.ts";
 import type { MemorySearchHit, RetrievalFilters } from "./retrieval.ts";
+
+type RoutingTrace = NonNullable<
+  NonNullable<AnswerMemoryResult["debugTrace"]>["routingTrace"]
+>;
+
+export function didTranslationRun(
+  before: AnswerMemoryResult,
+  after: AnswerMemoryResult,
+): boolean {
+  if (before.answerMode !== after.answerMode) return false;
+  return (
+    before.answer !== after.answer ||
+    (after.analytics?.tokenUsage.totalTokens ?? 0) >
+      (before.analytics?.tokenUsage.totalTokens ?? 0)
+  );
+}
+
+export function describeSelectedPath(
+  selectedPath: RoutingTrace["selectedPath"],
+  canUseFastPath: boolean,
+  answerStrategy: AnswerStrategy,
+): string {
+  switch (selectedPath) {
+    case "indexed_fast_path":
+      return canUseFastPath
+        ? "The requested strategy allowed Fast path, so the answer was assembled from retrieved evidence without full generation."
+        : "The result used an indexed Fast path.";
+    case "deep_generation":
+      return answerStrategy === "deep"
+        ? "Deep was requested explicitly, so the answer used grounded model generation."
+        : "Auto routing required synthesis/reasoning, so the answer used grounded model generation.";
+    case "deep_validation_fallback":
+      return "Grounded model generation ran, but validation rejected unsupported or incomplete output, so evidence fallback replaced the answer.";
+    case "deep_model_error_fallback":
+      return "Grounded model generation failed, so evidence fallback replaced the answer.";
+    case "no_memory":
+      return "Retrieval did not provide enough supported evidence to answer.";
+    case "unindexed_fast_path":
+      return "A direct date/range question matched unindexed diary evidence.";
+    case "embedding_error_fallback":
+      return "Embedding failed, so indexed retrieval used lexical/date fallback and skipped full generation.";
+    case "created_date_mismatch":
+      return "The requested created date did not match stored memory dates.";
+    default:
+      return "Answer routing completed.";
+  }
+}
 
 export function shouldExpandTemporalEvidenceSearch(
   question: string,
@@ -42,6 +90,24 @@ export function buildExpandedTemporalFilters(filters: RetrievalFilters): Retriev
     ...filters,
     startDate,
     limit: Math.min(Math.max(filters.limit ?? DEFAULT_RETRIEVAL_CANDIDATE_LIMIT, 16), 20),
+  };
+}
+
+export function shouldFallbackToLatestAvailable(
+  filters: RetrievalFilters,
+  chunks: MemorySearchHit[],
+): boolean {
+  return filters.fallbackToLatest === true && chunks.length === 0;
+}
+
+export function buildLatestAvailableFilters(
+  filters: RetrievalFilters,
+): RetrievalFilters {
+  return {
+    ...filters,
+    startDate: new Date(0),
+    fallbackToLatest: false,
+    allowTemporalFallback: true,
   };
 }
 

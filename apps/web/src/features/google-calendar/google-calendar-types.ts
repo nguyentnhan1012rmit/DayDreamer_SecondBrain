@@ -1,6 +1,6 @@
 export type CalendarConnectionStatus = {
-  source?: 'calendar';
-  oauthMode?: 'all_google_sources' | 'source_scoped';
+  source?: "calendar";
+  oauthMode?: "all_google_sources" | "source_scoped";
   connected: boolean;
   scopes?: string[];
   requestedScopes?: string[];
@@ -27,21 +27,21 @@ export type CalendarSyncResult = {
   queuedIndexingJobs?: number;
   linkedDiaryCount?: number;
   linkedEventCount?: number;
-  memoryIndexingStatus?: 'queued' | 'succeeded' | 'failed';
+  memoryIndexingStatus?: "queued" | "succeeded" | "failed";
 };
 
 export type CalendarFeedback = {
-  type: 'success' | 'error';
+  type: "success" | "error";
   text: string;
 };
 
 export type CalendarErrorKind =
-  | 'not_authenticated'
-  | 'not_connected'
-  | 'oauth_rejected'
-  | 'backend_unavailable'
-  | 'sync_failed'
-  | 'unknown';
+  | "not_authenticated"
+  | "not_connected"
+  | "oauth_rejected"
+  | "backend_unavailable"
+  | "sync_failed"
+  | "unknown";
 
 export type CalendarError = {
   kind: CalendarErrorKind;

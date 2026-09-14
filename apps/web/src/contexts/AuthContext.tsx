@@ -1,14 +1,26 @@
-'use client';
+"use client";
 
-import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
-import { createClient, type Session, type User, type SupabaseClient } from '@supabase/supabase-js';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+  type ReactNode,
+} from "react";
+import { useRouter } from "next/navigation";
+import {
+  createClient,
+  type Session,
+  type User,
+  type SupabaseClient,
+} from "@supabase/supabase-js";
 import {
   getAuthCallbackUrl,
   syncSessionWithBackend,
   type BackendAuthProfile,
   type UserRole,
-} from '@/lib/auth-flow';
+} from "@/lib/auth-flow";
 
 // Initialize Supabase client
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -29,8 +41,15 @@ type AuthContextType = {
   isAdmin: boolean;
   configError: string | null;
   signInWithGoogle: () => Promise<{ error?: string }>;
-  signUpWithEmail: (email: string, password: string, displayName: string) => Promise<{ error?: string }>;
-  signInWithEmail: (email: string, password: string) => Promise<{ error?: string }>;
+  signUpWithEmail: (
+    email: string,
+    password: string,
+    displayName: string,
+  ) => Promise<{ error?: string }>;
+  signInWithEmail: (
+    email: string,
+    password: string,
+  ) => Promise<{ error?: string }>;
   resetPassword: (email: string) => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
   getAccessToken: () => string | null;
@@ -42,10 +61,11 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [backendProfile, setBackendProfile] = useState<BackendAuthProfile | null>(null);
+  const [backendProfile, setBackendProfile] =
+    useState<BackendAuthProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(
-    hasSupabaseConfig ? null : "Missing Supabase environment variables"
+    hasSupabaseConfig ? null : "Missing Supabase environment variables",
   );
   const router = useRouter();
 
@@ -58,8 +78,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Get initial session
     supabase.auth.getSession().then(async ({ data: { session }, error }) => {
       if (error) {
-        console.warn('[Auth] Session restore failed:', error.message);
-        await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+        console.warn("[Auth] Session restore failed:", error.message);
+        await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
         setSession(null);
         setUser(null);
         setBackendProfile(null);
@@ -80,39 +100,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        if (!session) setBackendProfile(null);
-        setIsLoading(false);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      if (!session) setBackendProfile(null);
+      setIsLoading(false);
 
-        // Sync with backend on sign in (non-blocking, skip if backend unavailable)
-        if (event === 'SIGNED_IN' && session) {
-          syncSessionWithBackend(session)
-            .then(setBackendProfile)
-            .catch(() => {
-              setBackendProfile(null);
-            });
-        }
+      // Sync with backend on sign in (non-blocking, skip if backend unavailable)
+      if (event === "SIGNED_IN" && session) {
+        syncSessionWithBackend(session)
+          .then(setBackendProfile)
+          .catch(() => {
+            setBackendProfile(null);
+          });
       }
-    );
+    });
 
     return () => {
       subscription.unsubscribe();
     };
   }, []);
 
-  const signInWithGoogle = useCallback(async (): Promise<{ error?: string }> => {
+  const signInWithGoogle = useCallback(async (): Promise<{
+    error?: string;
+  }> => {
     if (!supabase) {
-      setConfigError('Cannot sign in: Supabase env vars missing');
-      return { error: 'Cannot sign in: Supabase env vars missing' };
+      setConfigError("Cannot sign in: Supabase env vars missing");
+      return { error: "Cannot sign in: Supabase env vars missing" };
     }
 
-    await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+    await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
 
     const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
+      provider: "google",
       options: {
         redirectTo: getAuthCallbackUrl(),
       },
@@ -125,51 +147,70 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return {};
   }, []);
 
-  const signUpWithEmail = useCallback(async (email: string, password: string, displayName: string): Promise<{ error?: string }> => {
-    if (!supabase) return { error: 'Supabase not configured' };
+  const signUpWithEmail = useCallback(
+    async (
+      email: string,
+      password: string,
+      displayName: string,
+    ): Promise<{ error?: string }> => {
+      if (!supabase) return { error: "Supabase not configured" };
 
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        emailRedirectTo: getAuthCallbackUrl(),
-        data: {
-          full_name: displayName,
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: getAuthCallbackUrl(),
+          data: {
+            full_name: displayName,
+          },
         },
-      },
-    });
+      });
 
-    if (error) return { error: error.message };
+      if (error) return { error: error.message };
 
-    // Supabase returns a user with empty identities when the email already exists
-    // (and email confirmation is enabled). Detect this case.
-    if (data?.user?.identities?.length === 0) {
-      return { error: 'An account with this email already exists. Try signing in or use Google login.' };
-    }
+      // Supabase returns a user with empty identities when the email already exists
+      // (and email confirmation is enabled). Detect this case.
+      if (data?.user?.identities?.length === 0) {
+        return {
+          error:
+            "An account with this email already exists. Try signing in or use Google login.",
+        };
+      }
 
-    return {};
-  }, []);
+      return {};
+    },
+    [],
+  );
 
-  const signInWithEmail = useCallback(async (email: string, password: string): Promise<{ error?: string }> => {
-    if (!supabase) return { error: 'Supabase not configured' };
+  const signInWithEmail = useCallback(
+    async (email: string, password: string): Promise<{ error?: string }> => {
+      if (!supabase) return { error: "Supabase not configured" };
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-    if (error) return { error: error.message };
-    router.push('/diary');
-    return {};
-  }, [router]);
+      if (error) return { error: error.message };
+      router.push("/diary");
+      return {};
+    },
+    [router],
+  );
 
-  const resetPassword = useCallback(async (email: string): Promise<{ error?: string }> => {
-    if (!supabase) return { error: 'Supabase not configured' };
+  const resetPassword = useCallback(
+    async (email: string): Promise<{ error?: string }> => {
+      if (!supabase) return { error: "Supabase not configured" };
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: getAuthCallbackUrl('recovery'),
-    });
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: getAuthCallbackUrl("recovery"),
+      });
 
-    if (error) return { error: error.message };
-    return {};
-  }, []);
+      if (error) return { error: error.message };
+      return {};
+    },
+    [],
+  );
 
   const signOut = useCallback(async () => {
     if (!supabase) {
@@ -177,14 +218,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     await supabase.auth.signOut();
     setBackendProfile(null);
-    router.push('/');
+    router.push("/");
   }, [router]);
 
   const getAccessToken = useCallback(() => {
     return session?.access_token ?? null;
   }, [session]);
 
-  const role = backendProfile?.role ?? 'user';
+  const role = backendProfile?.role ?? "user";
   const value: AuthContextType = {
     user,
     session,
@@ -192,7 +233,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAuthenticated: !!user,
     backendProfile,
     role,
-    isAdmin: role === 'admin',
+    isAdmin: role === "admin",
     configError,
     signInWithGoogle,
     signUpWithEmail,
@@ -209,7 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
 }

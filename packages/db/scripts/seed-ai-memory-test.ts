@@ -253,6 +253,7 @@ async function enqueueDiaryIndexingJob(
     update: {
       user_id: input.userId,
       status: "pending",
+      generation: { increment: 1 },
       retry_count: 0,
       error: null,
       payload: {
@@ -337,6 +338,21 @@ async function main() {
         tags: diary.tags,
       });
     }
+
+    await prisma.$transaction(async (tx: any) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { memory_revision: { increment: 1 } },
+      });
+      await tx.summary.updateMany({
+        where: { user_id: user.id },
+        data: { dirty: true },
+      });
+      await tx.searchHistory.updateMany({
+        where: { user_id: user.id, expires_at: { gt: new Date() } },
+        data: { expires_at: new Date() },
+      });
+    });
 
     console.log(
       JSON.stringify(

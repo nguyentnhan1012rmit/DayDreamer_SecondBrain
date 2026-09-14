@@ -34,6 +34,24 @@ describe('RedisCachedQueryEmbeddingProvider', () => {
     expect(cache.setEx).not.toHaveBeenCalled();
   });
 
+  it('reports Redis hits as warm and delegate misses as unknown', async () => {
+    const warm = createHarness(
+      JSON.stringify({
+        model: TUTURUUU_EMBEDDING_MODEL,
+        dimension: 768,
+        embedding,
+      }),
+    );
+    await expect(
+      warm.provider.embedQueryWithMetadata('What did I do?'),
+    ).resolves.toMatchObject({ cacheStatus: 'warm', cacheLayer: 'redis' });
+
+    const cold = createHarness();
+    await expect(
+      cold.provider.embedQueryWithMetadata('What did I do?'),
+    ).resolves.toMatchObject({ cacheStatus: 'unknown', cacheLayer: 'unknown' });
+  });
+
   it('stores a cache miss with a bounded TTL', async () => {
     const { provider, delegate, cache } = createHarness();
 

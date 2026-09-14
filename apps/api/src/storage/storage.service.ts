@@ -1,7 +1,9 @@
 // apps/api/src/storage/storage.service.ts
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { Readable } from 'node:stream';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { resolveSupabaseServiceRoleKey } from '@second-brain/shared';
 
 const DEFAULT_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
@@ -15,11 +17,7 @@ export class StorageService {
     }
 
     const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ??
-      process.env.SUPABASE_SERVICE_KEY ??
-      process.env.SUPABASE_SECRET_KEY ??
-      process.env.SECRET_KEY;
+    const supabaseKey = resolveSupabaseServiceRoleKey();
 
     if (!supabaseUrl || !supabaseKey) {
       throw new InternalServerErrorException(
@@ -29,7 +27,7 @@ export class StorageService {
 
     if (supabaseKey.startsWith('sb_publishable')) {
       throw new InternalServerErrorException(
-        'Attachment storage is using a publishable Supabase key. Set SUPABASE_SERVICE_ROLE_KEY, SUPABASE_SECRET_KEY, or SECRET_KEY to a server-side key.',
+        'Attachment storage is using a publishable Supabase key. Set SUPABASE_SERVICE_ROLE_KEY to a server-side key.',
       );
     }
 
@@ -46,7 +44,10 @@ export class StorageService {
       }
       await supabase.storage.createBucket(bucket, { public: false });
     } catch (err) {
-      console.warn(`[StorageService] Auto-create bucket '${bucket}' note:`, err);
+      console.warn(
+        `[StorageService] Auto-create bucket '${bucket}' note:`,
+        err,
+      );
     }
   }
 
@@ -105,9 +106,7 @@ export class StorageService {
 
   async downloadFile(bucket: string, path: string) {
     const supabase = this.getSupabaseClient();
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .download(path);
+    const { data, error } = await supabase.storage.from(bucket).download(path);
 
     if (error) {
       console.error('[StorageService] downloadFile error:', error);
@@ -116,6 +115,28 @@ export class StorageService {
     if (!data) throw new Error(`File not found in storage: ${path}`);
 
     return Buffer.from(await data.arrayBuffer());
+  }
+
+  async streamFile(bucket: string, path: string, rangeHeader?: string) {
+    const signedUrl = await this.createSignedUrl(bucket, path);
+    const upstream = await fetch(signedUrl, {
+      headers: rangeHeader ? { Range: rangeHeader } : undefined,
+    });
+
+    if (!upstream.ok && upstream.status !== 416) {
+      throw new Error(
+        `Storage download failed with status ${upstream.status}: ${path}`,
+      );
+    }
+
+    return {
+      stream: upstream.body
+        ? Readable.fromWeb(upstream.body as any)
+        : Readable.from([]),
+      statusCode: upstream.status,
+      contentLength: upstream.headers.get('content-length'),
+      contentRange: upstream.headers.get('content-range'),
+    };
   }
 
   async deleteFile(bucket: string, path: string) {

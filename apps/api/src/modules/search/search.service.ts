@@ -23,6 +23,7 @@ import {
 import { getQueryEmbeddingProvider } from '../../common/cache/query-embedding-cache';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SearchQueryDto } from './dto/search-query.dto';
+import { recordPerformanceMetric } from '../../common/performance/performance-metrics';
 import {
   type AuthenticatedRequestUser,
   canUseAdminPrivileges,
@@ -31,7 +32,7 @@ import {
 } from '../auth/user-role';
 
 const DEFAULT_SEARCH_LIMIT = 8;
-const SEARCH_CACHE_PIPELINE_VERSION = 'ai-recall-v11-attachment-media';
+const SEARCH_CACHE_PIPELINE_VERSION = 'ai-recall-v12-structured-output';
 const DEFAULT_TUTURUUU_ANSWER_MODEL = 'google/gemini-3.5-flash-lite';
 
 type SearchAuthInput = string | AuthenticatedRequestUser;
@@ -39,6 +40,7 @@ type SearchDbUser = {
   id: string;
   email: string | null;
   role: string | null;
+  memory_revision: bigint;
 };
 
 @Injectable()
@@ -49,7 +51,7 @@ export class SearchService {
     const authUser = this.normalizeAuthInput(authInput);
     const user = await this.prisma.user.findUnique({
       where: { supabaseId: authUser.userId },
-      select: { id: true, email: true, role: true },
+      select: { id: true, email: true, role: true, memory_revision: true },
     });
 
     if (!user) {
@@ -61,7 +63,8 @@ export class SearchService {
       queryDto.responseLanguage ??
       this.inferResponseLanguage(normalizedQuestion);
     const timeZone = queryDto.timeZone?.trim() || undefined;
-    const cacheVersion = this.getSearchCacheVersion();
+    const sourceRevision = user.memory_revision ?? 0n;
+    const cacheVersion = this.getSearchCacheVersion(sourceRevision);
 
     // ── Live search ──
     try {
@@ -77,7 +80,10 @@ export class SearchService {
           cacheVersion,
         });
 
-        if (redisCached && this.isCacheableCachedAnswer(redisCached)) {
+        if (
+          redisCached &&
+          this.isCacheableCachedAnswer(redisCached, cacheVersion)
+        ) {
           return {
             ...redisCached,
             debugTrace: null,
@@ -100,7 +106,13 @@ export class SearchService {
 
         if (cached) {
           const cachedAnalytics = this.parseJsonObject(cached.analytics_json);
-          if (!this.isCacheableStoredAnswer(cachedAnalytics, cached.answer)) {
+          if (
+            !this.isCacheableStoredAnswer(
+              cachedAnalytics,
+              cached.answer,
+              cacheVersion,
+            )
+          ) {
             console.warn(
               'Skipping stale/unsafe search cache entry with fallback or model error.',
             );
@@ -167,11 +179,20 @@ export class SearchService {
         debugTrace: includeDebugTrace ? (result.debugTrace ?? null) : null,
         cached: false,
       };
+      this.recordSearchPerformance(responseAnalytics, answerMode);
+
+      const latestUserState = await this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { memory_revision: true },
+      });
+      const sourceStateStable =
+        (latestUserState?.memory_revision ?? 0n) === sourceRevision;
 
       // ── Persist to search history (async, non-blocking) ──
       if (
         this.canUseExactAnswerCache(queryDto) &&
         !includeDebugTrace &&
+        sourceStateStable &&
         this.isCacheableLiveResult(result, answerMode)
       ) {
         setCachedSearchAnswer(
@@ -220,6 +241,33 @@ export class SearchService {
       throw new InternalServerErrorException(
         'Failed to answer memory search question.',
       );
+    }
+  }
+
+  private recordSearchPerformance(
+    analytics: Record<string, any> | null,
+    answerMode: string,
+  ) {
+    const timing = analytics?.timing;
+    if (!timing || typeof timing !== 'object') return;
+    const labels = { answerMode };
+    const stages = [
+      ['search.retrieval', timing.retrieveMs],
+      ['search.rerank', timing.rerankMs],
+      ['search.first_result', timing.firstResultMs],
+      ['search.full_answer', timing.fullAnswerMs ?? timing.totalMs],
+    ] as const;
+    for (const [name, value] of stages) {
+      if (typeof value === 'number') {
+        recordPerformanceMetric(name, value, labels);
+      }
+    }
+    if (typeof timing.embedMs === 'number') {
+      recordPerformanceMetric('search.embedding', timing.embedMs, {
+        ...labels,
+        cache: analytics.embeddingCache?.status ?? 'unknown',
+        layer: analytics.embeddingCache?.layer ?? 'unknown',
+      });
     }
   }
 
@@ -320,11 +368,13 @@ export class SearchService {
     answerMode?: string;
     answer?: string;
     analytics?: unknown;
-  }) {
+  }, expectedCacheVersion: string) {
     if (this.isLikelyIncompleteAnswer(value.answer)) return false;
     if (value.modelError || value.noMemory === true) return false;
 
-    if (!this.hasCurrentCacheVersion(value.analytics)) return false;
+    if (!this.hasCurrentCacheVersion(value.analytics, expectedCacheVersion)) {
+      return false;
+    }
 
     const analyticsAnswerMode = this.getAnalyticsAnswerMode(value.analytics);
     const answerMode =
@@ -335,10 +385,18 @@ export class SearchService {
   private isCacheableStoredAnswer(
     analytics: Record<string, unknown> | null,
     answer?: string,
+    expectedCacheVersion?: string,
   ) {
     if (this.isLikelyIncompleteAnswer(answer)) return false;
     if (!analytics) return false;
-    if (!this.hasCurrentCacheVersion(analytics)) return false;
+    if (
+      !this.hasCurrentCacheVersion(
+        analytics,
+        expectedCacheVersion ?? this.getSearchCacheVersion(0n),
+      )
+    ) {
+      return false;
+    }
 
     const status =
       typeof analytics.status === 'string' ? analytics.status : undefined;
@@ -356,7 +414,7 @@ export class SearchService {
     return typeof answerMode === 'string' ? answerMode : undefined;
   }
 
-  private getSearchCacheVersion() {
+  private getSearchCacheVersion(memoryRevision: bigint = 0n) {
     const answerModel = normalizeTuturuuuModelForCache(
       getTuturuuuAnswerModel(),
       DEFAULT_TUTURUUU_ANSWER_MODEL,
@@ -371,6 +429,7 @@ export class SearchService {
       `answer:${answerModel}`,
       `embedding:${embeddingModel}`,
       `limit:${DEFAULT_SEARCH_LIMIT}`,
+      `memory:${memoryRevision.toString()}`,
     ].join('|');
   }
 
@@ -392,7 +451,7 @@ export class SearchService {
     };
   }
 
-  private hasCurrentCacheVersion(analytics: unknown) {
+  private hasCurrentCacheVersion(analytics: unknown, expected: string) {
     if (
       !analytics ||
       typeof analytics !== 'object' ||
@@ -402,7 +461,7 @@ export class SearchService {
     }
 
     const version = (analytics as { cacheVersion?: unknown }).cacheVersion;
-    return version === this.getSearchCacheVersion();
+    return version === expected;
   }
 
   private isLikelyIncompleteAnswer(answer: unknown) {

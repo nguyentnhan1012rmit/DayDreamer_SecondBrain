@@ -1,17 +1,22 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import {
-  formatSummaryDateTime,
-  formatSummaryPeriodRange,
-  generateAiText,
-  getSummaryPeriod,
-  getTuturuuuSummaryModel,
-  type SummaryPeriod,
+  sanitizeSummaryContent,
+  SummaryGenerationEngine,
+  type SummaryEngineStore,
 } from '@second-brain/ai';
+import {
+  bumpUserMemoryRevision,
+  deleteMemoryChunksForSource,
+  getUserMemoryRevision,
+  markDependentSummariesDirty,
+  withPostgresAdvisoryLock,
+} from '@second-brain/db';
 import { PrismaService } from '../../prisma/prisma.service';
 import { invalidateUserSearchCache } from '../../common/cache/search-answer-cache';
 import type { CreateSummaryDto } from './dto/create-summary.dto';
@@ -24,6 +29,9 @@ type SummaryRecord = {
   period_start: Date;
   period_end: Date;
   created_at: Date;
+  updated_at: Date;
+  source_version: bigint;
+  dirty: boolean;
 };
 
 type GenerateSummaryInput = {
@@ -55,6 +63,7 @@ export class SummaryService {
     const summaries = await this.prisma.summary.findMany({
       where: {
         user_id: user.id,
+        dirty: false,
         ...(options.type && { summary_type: options.type }),
         ...(options.startDate || options.endDate
           ? {
@@ -82,6 +91,7 @@ export class SummaryService {
       where: {
         id: summaryId,
         user_id: user.id,
+        dirty: false,
       },
     });
 
@@ -92,7 +102,10 @@ export class SummaryService {
     return this.toClientSummary(summary);
   }
 
-  async generateSummary(authUser: AuthenticatedUserInput | string, dto: CreateSummaryDto) {
+  async generateSummary(
+    authUser: AuthenticatedUserInput | string,
+    dto: CreateSummaryDto,
+  ) {
     const user = await this.findOrCreateUser(authUser);
     return this.generateSummaryForUserId(user.id, dto);
   }
@@ -102,64 +115,225 @@ export class SummaryService {
     if (!Number.isFinite(anchorDate.getTime())) {
       throw new BadRequestException('Invalid summary date.');
     }
-
-    const period = getSummaryPeriod(input.type, anchorDate);
-    const summaryPeriodKey = {
-      user_id: userId,
-      summary_type: input.type,
-      period_start: period.start,
-      period_end: period.end,
-    };
-    const existing = await this.prisma.summary.findFirst({
-      where: summaryPeriodKey,
-    });
-
-    if (existing && !input.force) {
-      await this.enqueueSummaryIndexingJob(this.prisma, {
+    let result;
+    try {
+      result = await this.createSummaryEngine().generate({
         userId,
-        summaryId: existing.id,
+        type: input.type,
+        anchorDate,
+        force: input.force,
       });
-
-      return {
-        generated: false,
-        summary: this.toClientSummary(existing),
-        memoryIndexingStatus: 'queued',
-      };
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === 'AI returned an empty summary.'
+      ) {
+        throw new InternalServerErrorException(error.message);
+      }
+      throw error;
     }
 
-    const context = await this.buildSummaryContext(userId, input.type, period);
-    if (!context.hasContent) {
+    if (result.status === 'empty') {
       throw new BadRequestException(
         `No diary, calendar, or lower-level summaries found for this ${input.type} period.`,
       );
     }
-
-    const content = await this.generateAiSummary(input.type, period, context.text);
-    const summary = await this.prisma.$transaction(async (tx) => {
-      const savedSummary = await tx.summary.upsert({
-        where: {
-          user_id_summary_type_period_start_period_end: summaryPeriodKey,
-        },
-        update: { content },
-        create: {
-          ...summaryPeriodKey,
-          content,
-        },
-      });
-
-      await this.enqueueSummaryIndexingJob(tx, {
-        userId,
-        summaryId: savedSummary.id,
-      });
-
-      return savedSummary;
-    });
+    if (result.status === 'locked' || !result.summary) {
+      throw new ConflictException(
+        'This summary is already being generated. Try again shortly.',
+      );
+    }
 
     return {
-      generated: true,
-      summary: this.toClientSummary(summary),
-      memoryIndexingStatus: 'queued',
+      generated: result.status === 'generated',
+      stale: result.status === 'stale',
+      summary: this.toClientSummary(result.summary),
+      memoryIndexingStatus:
+        result.status === 'stale' ? 'waiting_for_regeneration' : 'queued',
     };
+  }
+
+  private createSummaryEngine() {
+    const store: SummaryEngineStore = {
+      findExisting: ({ userId, type, period }) =>
+        this.prisma.summary.findFirst({
+          where: {
+            user_id: userId,
+            summary_type: type,
+            period_start: period.start,
+            period_end: period.end,
+          },
+        }),
+      findLowerSummaries: ({ userId, type, period }) =>
+        this.prisma.summary.findMany({
+          where: {
+            user_id: userId,
+            summary_type: type,
+            dirty: false,
+            period_start: { gte: period.start },
+            period_end: { lte: period.end },
+          },
+          orderBy: { period_start: 'asc' },
+        }),
+      findActivity: async ({ userId, period, limit, coveredRanges }) => {
+        const dateWhere = (field: string) => ({
+          AND: [
+            { [field]: { gte: period.start, lte: period.end } },
+            ...coveredRanges.map((range) => ({
+              OR: [
+                { [field]: { lt: range.start } },
+                { [field]: { gt: range.end } },
+              ],
+            })),
+          ],
+        });
+        const [diaries, events, attachments, gmail, drive, contacts] =
+          await Promise.all([
+          this.prisma.diaryEntry.findMany({
+            where: {
+              user_id: userId,
+              ...dateWhere('entry_date'),
+            },
+            orderBy: { entry_date: 'asc' },
+            take: limit,
+          }),
+          this.prisma.calendarEvent.findMany({
+            where: {
+              user_id: userId,
+              ...dateWhere('start_time'),
+            },
+            orderBy: { start_time: 'asc' },
+            take: limit,
+          }),
+          this.prisma.attachment.findMany({
+            where: {
+              extracted_text: { not: null },
+              diary_entry: {
+                user_id: userId,
+                ...dateWhere('entry_date'),
+              },
+            },
+            include: { diary_entry: { select: { entry_date: true } } },
+            orderBy: { created_at: 'asc' },
+            take: limit,
+          }),
+          this.prisma.gmailMessage.findMany({
+            where: { user_id: userId, ...dateWhere('received_at') },
+            orderBy: { received_at: 'asc' },
+            take: limit,
+          }),
+          this.prisma.googleDriveFile.findMany({
+            where: {
+              user_id: userId,
+              extracted_text: { not: null },
+              ...dateWhere('modified_time'),
+            },
+            orderBy: { modified_time: 'asc' },
+            take: limit,
+          }),
+          this.prisma.googleContact.findMany({
+            where: { user_id: userId, ...dateWhere('updated_at') },
+            orderBy: { updated_at: 'asc' },
+            take: limit,
+          }),
+        ]);
+        return {
+          diaries,
+          events,
+          attachments: attachments.map((attachment) => ({
+            occurred_at: attachment.diary_entry.entry_date,
+            extracted_text: attachment.extracted_text!,
+            file_type: attachment.file_type,
+            source_title: attachment.storage_path.split('/').pop(),
+          })),
+          gmail: gmail
+            .filter((message) => message.received_at)
+            .map((message) => ({
+              received_at: message.received_at!,
+              sender: message.sender,
+              subject: message.subject,
+              body: message.body,
+            })),
+          drive: drive
+            .filter((file) => file.modified_time)
+            .map((file) => ({
+              occurred_at: file.modified_time!,
+              name: file.name,
+              extracted_text: file.extracted_text!,
+            })),
+          contacts: contacts.map((contact) => ({
+            occurred_at: contact.updated_at,
+            display_name: contact.display_name,
+            email_addresses: contact.email_addresses,
+            organizations: contact.organizations,
+          })),
+        };
+      },
+      getSourceVersion: (userId) =>
+        getUserMemoryRevision(this.prisma as any, userId),
+      save: ({ userId, type, period, content, sourceVersion }) =>
+        this.prisma.$transaction(async (tx) => {
+          const currentVersion = await getUserMemoryRevision(tx as any, userId);
+          let dirty = currentVersion !== sourceVersion;
+          if (!dirty) {
+            const persistedVersion = await bumpUserMemoryRevision(
+              tx as any,
+              userId,
+            );
+            dirty = persistedVersion !== sourceVersion + 1n;
+          }
+          const summary = await tx.summary.upsert({
+            where: {
+              user_id_summary_type_period_start_period_end: {
+                user_id: userId,
+                summary_type: type,
+                period_start: period.start,
+                period_end: period.end,
+              },
+            },
+            update: { content, source_version: sourceVersion, dirty },
+            create: {
+              user_id: userId,
+              summary_type: type,
+              period_start: period.start,
+              period_end: period.end,
+              content,
+              source_version: sourceVersion,
+              dirty,
+            },
+          });
+          await markDependentSummariesDirty(tx as any, {
+            userId,
+            summaryType: type,
+            periodStart: period.start,
+            periodEnd: period.end,
+          });
+          await deleteMemoryChunksForSource(tx as any, {
+            userId,
+            sourceType: 'summary',
+            sourceId: summary.id,
+          });
+          if (!dirty) {
+            await this.enqueueSummaryIndexingJob(tx, {
+              userId,
+              summaryId: summary.id,
+            });
+          }
+          return summary;
+        }),
+      ensureIndexed: async (summary, userId) => {
+        await this.enqueueSummaryIndexingJob(this.prisma, {
+          userId,
+          summaryId: summary.id,
+        });
+      },
+    };
+
+    return new SummaryGenerationEngine(store, {
+      contextItemLimit: Number(process.env.SUMMARY_CONTEXT_ITEM_LIMIT ?? 80),
+      contextMaxChars: Number(process.env.SUMMARY_CONTEXT_MAX_CHARS ?? 24_000),
+      withLock: (key, callback) => withPostgresAdvisoryLock(key, callback),
+    });
   }
 
   private async findOrCreateUser(authUser: AuthenticatedUserInput | string) {
@@ -208,6 +382,7 @@ export class SummaryService {
         retry_count: 0,
         error: null,
         payload: {},
+        generation: { increment: 1 },
         run_after: new Date(),
         locked_at: null,
         locked_by: null,
@@ -238,233 +413,17 @@ export class SummaryService {
     await invalidateUserSearchCache(userId);
   }
 
-  private async buildSummaryContext(
-    userId: string,
-    type: SummaryType,
-    period: SummaryPeriod,
-  ) {
-    if (type === 'weekly') {
-      const dailySummaries = await this.findLowerSummaries(userId, 'daily', period);
-      if (dailySummaries.length) {
-        return {
-          hasContent: true,
-          text: formatSummaryList('Daily summaries', dailySummaries, period.timeZone),
-        };
-      }
-    }
-
-    if (type === 'monthly') {
-      const weeklySummaries = await this.findLowerSummaries(userId, 'weekly', period);
-      if (weeklySummaries.length) {
-        return {
-          hasContent: true,
-          text: formatSummaryList('Weekly summaries', weeklySummaries, period.timeZone),
-        };
-      }
-
-      const dailySummaries = await this.findLowerSummaries(userId, 'daily', period);
-      if (dailySummaries.length) {
-        return {
-          hasContent: true,
-          text: formatSummaryList('Daily summaries', dailySummaries, period.timeZone),
-        };
-      }
-    }
-
-    if (type === 'yearly') {
-      const monthlySummaries = await this.findLowerSummaries(userId, 'monthly', period);
-      if (monthlySummaries.length) {
-        return {
-          hasContent: true,
-          text: formatSummaryList('Monthly summaries', monthlySummaries, period.timeZone),
-        };
-      }
-
-      const weeklySummaries = await this.findLowerSummaries(userId, 'weekly', period);
-      if (weeklySummaries.length) {
-        return {
-          hasContent: true,
-          text: formatSummaryList('Weekly summaries', weeklySummaries, period.timeZone),
-        };
-      }
-    }
-
-    return this.buildRawActivityContext(userId, period);
-  }
-
-  private async findLowerSummaries(
-    userId: string,
-    type: SummaryType,
-    period: SummaryPeriod,
-  ) {
-    return this.prisma.summary.findMany({
-      where: {
-        user_id: userId,
-        summary_type: type,
-        period_start: { gte: period.start },
-        period_end: { lte: period.end },
-      },
-      orderBy: { period_start: 'asc' },
-    });
-  }
-
-  private async buildRawActivityContext(
-    userId: string,
-    period: SummaryPeriod,
-  ) {
-    const itemLimit = this.getSummaryContextItemLimit();
-    const [diaries, events] = await Promise.all([
-      this.prisma.diaryEntry.findMany({
-        where: {
-          user_id: userId,
-          entry_date: { gte: period.start, lte: period.end },
-        },
-        orderBy: { entry_date: 'asc' },
-        take: itemLimit,
-      }),
-      this.prisma.calendarEvent.findMany({
-        where: {
-          user_id: userId,
-          start_time: { gte: period.start, lte: period.end },
-        },
-        orderBy: { start_time: 'asc' },
-        take: itemLimit,
-      }),
-    ]);
-
-    const sections: string[] = [];
-    if (diaries.length) {
-      sections.push(
-        [
-          'Diary entries:',
-          ...diaries.map((entry) =>
-            `- ${formatSummaryDateTime(entry.entry_date, period.timeZone)}: ${entry.raw_text}`,
-          ),
-        ].join('\n'),
-      );
-    }
-
-    if (events.length) {
-      sections.push(
-        [
-          'Calendar events:',
-          ...events.map((event) =>
-            `- ${formatSummaryDateTime(event.start_time, period.timeZone)}-${formatSummaryDateTime(
-              event.end_time,
-              period.timeZone,
-            )}: ${event.title}${
-              event.description ? ` - ${event.description}` : ''
-            }`,
-          ),
-        ].join('\n'),
-      );
-    }
-
-    return {
-      hasContent: sections.length > 0,
-      text: this.truncateSummaryContext(sections.join('\n\n')),
-    };
-  }
-
-  private async generateAiSummary(
-    type: SummaryType,
-    period: SummaryPeriod,
-    context: string,
-  ) {
-    const prompt = buildSummaryPrompt(type, period, context);
-    const text = await generateAiText({
-      model: getTuturuuuSummaryModel(),
-      prompt,
-    });
-
-    if (!text) {
-      throw new InternalServerErrorException('AI returned an empty summary.');
-    }
-
-    return sanitizeSummaryContent(text);
-  }
-
-  private getSummaryContextItemLimit() {
-    const configured = Number(process.env.SUMMARY_CONTEXT_ITEM_LIMIT ?? 80);
-    if (!Number.isFinite(configured)) return 80;
-    return Math.min(Math.max(Math.floor(configured), 10), 200);
-  }
-
-  private truncateSummaryContext(context: string) {
-    const maxChars = Number(process.env.SUMMARY_CONTEXT_MAX_CHARS ?? 24_000);
-    if (!Number.isFinite(maxChars) || maxChars <= 0 || context.length <= maxChars) {
-      return context;
-    }
-
-    return `${context.slice(0, maxChars)}\n\n[Context truncated to keep the summary request within budget.]`;
-  }
-
   private toClientSummary(summary: SummaryRecord) {
     return {
       id: summary.id,
       type: summary.summary_type,
       content: sanitizeSummaryContent(summary.content),
-      periodStart: summary.period_start?.toISOString?.() ?? summary.period_start,
+      periodStart:
+        summary.period_start?.toISOString?.() ?? summary.period_start,
       periodEnd: summary.period_end?.toISOString?.() ?? summary.period_end,
       createdAt: summary.created_at?.toISOString?.() ?? summary.created_at,
+      updatedAt: summary.updated_at?.toISOString?.() ?? summary.updated_at,
+      dirty: summary.dirty,
     };
   }
-}
-
-function formatSummaryList(label: string, summaries: SummaryRecord[], timeZone: string) {
-  return [
-    `${label}:`,
-    ...summaries.map((summary) =>
-      `- ${formatSummaryDateTime(summary.period_start, timeZone)} to ${formatSummaryDateTime(
-        summary.period_end,
-        timeZone,
-      )}: ${summary.content}`,
-    ),
-  ].join('\n');
-}
-
-function buildSummaryPrompt(
-  type: SummaryType,
-  period: SummaryPeriod,
-  context: string,
-) {
-  const instructions = {
-    daily:
-      'Create a concise daily log. Capture concrete events, accomplishments, mood if evident, and notable follow-ups.',
-    weekly:
-      'Create a weekly review. Identify key events, progress, recurring themes, blockers, and 2-3 practical next steps.',
-    monthly:
-      'Create a monthly retrospective. Highlight major accomplishments, patterns, challenges, changes in habits/mood, and next-month suggestions.',
-    yearly:
-      'Create a yearly retrospective. Summarize major themes, milestones, recurring patterns, growth areas, and thoughtful recommendations for next year.',
-  } satisfies Record<SummaryType, string>;
-
-  return `
-You are the reflection engine for a personal Second Brain diary.
-
-Summary type: ${type}
-Period: ${formatSummaryPeriodRange(period)}
-
-Task:
-${instructions[type]}
-
-Rules:
-- Use only the supplied context.
-- Do not invent people, events, dates, emotions, or outcomes.
-- Prefer specific details over generic encouragement.
-- If evidence is thin, say so briefly.
-- Respond in clear English with short plain-text sections.
-- Do not use Markdown emphasis. Never wrap headings, labels, or phrases in **.
-
-Context:
-${context}
-`.trim();
-}
-
-function sanitizeSummaryContent(content: string) {
-  return content
-    .replace(/\*\*([\s\S]*?)\*\*/g, '$1')
-    .replace(/\*\*/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .trim();
 }

@@ -5,7 +5,7 @@ import {
   Waves,
   type LucideIcon,
 } from "lucide-react";
-import type { DiaryMood } from "@/lib/api-client";
+import type { DiaryMood } from "@/lib/api/diary-api";
 
 export type MoodMeta = {
   value: DiaryMood;

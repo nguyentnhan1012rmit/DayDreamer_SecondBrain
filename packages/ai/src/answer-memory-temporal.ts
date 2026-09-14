@@ -279,6 +279,7 @@ function inferTemporalFilters(
     return withTemporalFallback({
       startDate: zonedDateTimeToUtc(addLocalDays(localToday, -60), timeZone),
       endDate: new Date(zonedDateTimeToUtc(addLocalDays(localToday, 1), timeZone).getTime() - 1),
+      fallbackToLatest: true,
     });
   }
 

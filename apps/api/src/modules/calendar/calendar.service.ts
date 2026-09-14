@@ -5,11 +5,13 @@ import {
     NotFoundException,
     UnauthorizedException,
 } from '@nestjs/common';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { google, calendar_v3 } from 'googleapis';
+import { deleteMemoryChunksForSource, markMemorySourcesChanged } from '@second-brain/db';
 import { PrismaService } from '../../prisma/prisma.service';
 import { decryptOAuthToken, encryptOAuthToken } from './oauth-token-crypto';
 import { invalidateUserSearchCache } from '../../common/cache/search-answer-cache';
+import { readSyncCursor } from '../../common/google/google-sync-utils';
 import {
     GOOGLE_SOURCE_SCOPES,
     GoogleSource,
@@ -156,7 +158,7 @@ export class CalendarService {
         const startTime = googleEvent.start?.dateTime || googleEvent.start?.date;
         const endTime = googleEvent.end?.dateTime || googleEvent.end?.date;
 
-        return {
+        const normalized = {
             external_id: googleEvent.id as string,
             user_id: userId,
             title: googleEvent.summary || 'Untitled Event',
@@ -164,6 +166,16 @@ export class CalendarService {
             start_time: startTime ? new Date(startTime) : new Date(),
             end_time: endTime ? new Date(endTime) : new Date(),
             html_link: googleEvent.htmlLink || null,
+        };
+        return {
+            ...normalized,
+            content_hash: createHash('sha256').update(JSON.stringify({
+                title: normalized.title,
+                description: normalized.description,
+                startTime: normalized.start_time.toISOString(),
+                endTime: normalized.end_time.toISOString(),
+                htmlLink: normalized.html_link,
+            })).digest('hex'),
         };
     }
 
@@ -339,30 +351,56 @@ export class CalendarService {
         const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
         try {
+            const connection = await getGoogleConnectionStatus(this.prisma, user.id, 'calendar', true);
+            const savedCursor = readSyncCursor<{ syncToken: string }>(connection.syncCursor);
             const timeMin = new Date();
             timeMin.setDate(timeMin.getDate() - 30);
 
             const timeMax = new Date();
             timeMax.setDate(timeMax.getDate() + 60);
 
-            const maxResults = Math.min(Math.max(options.limit ?? 250, 1), 250);
+            const maxResults = Math.min(Math.max(options.limit ?? 250, 1), 2500);
+            let incremental = Boolean(savedCursor.syncToken);
+            let rawEvents: calendar_v3.Schema$Event[] = [];
+            let nextSyncToken: string | undefined;
+            try {
+                ({ events: rawEvents, nextSyncToken } = await this.listCalendarEventPages(calendar, {
+                    pageSize: Math.min(maxResults, 2500),
+                    syncToken: savedCursor.syncToken,
+                    timeMin,
+                    timeMax,
+                }));
+            } catch (error) {
+                if (!savedCursor.syncToken || !this.isExpiredCalendarSyncToken(error)) throw error;
+                incremental = false;
+                ({ events: rawEvents, nextSyncToken } = await this.listCalendarEventPages(calendar, {
+                    pageSize: Math.min(maxResults, 2500),
+                    timeMin,
+                    timeMax,
+                }));
+            }
 
-            const response = await calendar.events.list({
-                calendarId: 'primary',
-                timeMin: timeMin.toISOString(),
-                timeMax: timeMax.toISOString(),
-                maxResults,
-                singleEvents: true,
-                orderBy: 'startTime',
-            });
+            const activeEvents = rawEvents.filter((event) => event.id && event.status !== 'cancelled');
+            const deletedExternalIds = rawEvents
+                .filter((event) => event.id && event.status === 'cancelled')
+                .map((event) => event.id!);
 
-            const rawEvents = response.data.items || [];
-
-            const queuedIndexingJobs = await this.prisma.$transaction(async (tx) => {
+            const transactionResult = await this.prisma.$transaction(async (tx) => {
                 let queuedCount = 0;
+                let occurredFromMs = Number.POSITIVE_INFINITY;
+                let occurredToMs = Number.NEGATIVE_INFINITY;
 
-                for (const event of rawEvents) {
-                    const normalizedData = this.normalizeEvent(event, user.id);
+                const normalizedEvents = activeEvents.map((event) => this.normalizeEvent(event, user.id));
+                const existing = (normalizedEvents.length
+                    ? await tx.calendarEvent.findMany({
+                        where: { user_id: user.id, external_id: { in: normalizedEvents.map((event) => event.external_id) } },
+                        select: { external_id: true, content_hash: true },
+                    })
+                    : []) ?? [];
+                const hashes = new Map(existing.map((event) => [event.external_id, event.content_hash]));
+                const changedEvents = normalizedEvents.filter((event) => hashes.get(event.external_id) !== event.content_hash);
+
+                for (const normalizedData of changedEvents) {
                     const syncedEvent = await tx.calendarEvent.upsert({
                         where: {
                             user_id_external_id: {
@@ -376,6 +414,7 @@ export class CalendarService {
                             start_time: normalizedData.start_time,
                             end_time: normalizedData.end_time,
                             html_link: normalizedData.html_link,
+                            content_hash: normalizedData.content_hash,
                         },
                         create: {
                             external_id: normalizedData.external_id,
@@ -385,6 +424,7 @@ export class CalendarService {
                             start_time: normalizedData.start_time,
                             end_time: normalizedData.end_time,
                             html_link: normalizedData.html_link,
+                            content_hash: normalizedData.content_hash,
                         },
                     });
 
@@ -396,17 +436,64 @@ export class CalendarService {
                     });
 
                     queuedCount += 1;
+                    occurredFromMs = Math.min(
+                        occurredFromMs,
+                        normalizedData.start_time.getTime(),
+                    );
+                    occurredToMs = Math.max(
+                        occurredToMs,
+                        normalizedData.end_time.getTime(),
+                    );
                 }
 
-                return queuedCount;
+                const deletedRows = deletedExternalIds.length
+                    ? await tx.calendarEvent.findMany({
+                        where: { user_id: user.id, external_id: { in: deletedExternalIds } },
+                        select: { id: true, start_time: true, end_time: true },
+                    })
+                    : [];
+                for (const row of deletedRows) {
+                    await deleteMemoryChunksForSource(tx as any, {
+                        userId: user.id,
+                        sourceType: 'calendar',
+                        sourceId: row.id,
+                    });
+                    occurredFromMs = Math.min(occurredFromMs, row.start_time.getTime());
+                    occurredToMs = Math.max(occurredToMs, row.end_time.getTime());
+                }
+                if (deletedRows.length) {
+                    await tx.calendarEvent.deleteMany({ where: { id: { in: deletedRows.map((row) => row.id) } } });
+                }
+
+                if (queuedCount || deletedRows.length) {
+                    await markMemorySourcesChanged(tx as any, {
+                        userId: user.id,
+                        occurredFrom: Number.isFinite(occurredFromMs)
+                            ? new Date(occurredFromMs)
+                            : null,
+                        occurredTo: Number.isFinite(occurredToMs)
+                            ? new Date(occurredToMs)
+                            : null,
+                    });
+                    await this.expireSearchHistory(tx, user.id);
+                }
+
+                return { queuedCount, affectedCount: queuedCount + deletedRows.length };
             });
+            if (transactionResult.affectedCount) await invalidateUserSearchCache(user.id);
             const linking = await this.linkCalendarEventsToDiaries(user.id);
-            await recordGoogleSyncSuccess(this.prisma, { userId: user.id, source: 'calendar' });
+            await recordGoogleSyncSuccess(this.prisma, {
+                userId: user.id,
+                source: 'calendar',
+                syncCursor: nextSyncToken ? { syncToken: nextSyncToken } : undefined,
+            });
 
             return {
                 message: 'Sync completed successfully; calendar memory indexing queued and diary linking checked.',
                 syncedCount: rawEvents.length,
-                queuedIndexingJobs,
+                queuedIndexingJobs: transactionResult.queuedCount,
+                deletedCount: deletedExternalIds.length,
+                incremental,
                 linkedDiaryCount: linking.linkedDiaryCount,
                 linkedEventCount: linking.linkedEventCount,
                 memoryIndexingStatus: 'queued',
@@ -459,6 +546,40 @@ export class CalendarService {
         });
     }
 
+    private async listCalendarEventPages(
+        calendar: calendar_v3.Calendar,
+        input: { pageSize: number; syncToken?: string; timeMin: Date; timeMax: Date },
+    ) {
+        const events: calendar_v3.Schema$Event[] = [];
+        let pageToken: string | undefined;
+        let nextSyncToken: string | undefined;
+        do {
+            const response = await calendar.events.list({
+                calendarId: 'primary',
+                maxResults: input.pageSize,
+                pageToken,
+                showDeleted: true,
+                singleEvents: true,
+                ...(input.syncToken
+                    ? { syncToken: input.syncToken }
+                    : {
+                        timeMin: input.timeMin.toISOString(),
+                        timeMax: input.timeMax.toISOString(),
+                        orderBy: 'startTime' as const,
+                    }),
+            });
+            events.push(...(response.data.items ?? []));
+            pageToken = response.data.nextPageToken ?? undefined;
+            nextSyncToken = response.data.nextSyncToken ?? nextSyncToken;
+        } while (pageToken);
+        return { events, nextSyncToken };
+    }
+
+    private isExpiredCalendarSyncToken(error: unknown) {
+        const value = error as { code?: number; response?: { status?: number } };
+        return value.code === 410 || value.response?.status === 410;
+    }
+
     private async enqueueCalendarIndexingJob(
         tx: any,
         input: {
@@ -485,6 +606,7 @@ export class CalendarService {
                     externalId: input.externalId,
                     sourceTitle: input.title,
                 },
+                generation: { increment: 1 },
                 run_after: new Date(),
                 locked_at: null,
                 locked_by: null,
@@ -503,11 +625,10 @@ export class CalendarService {
             },
         });
 
-        await this.expireSearchCache(tx, input.userId);
         return job;
     }
 
-    private async expireSearchCache(tx: any, userId: string) {
+    private async expireSearchHistory(tx: any, userId: string) {
         await tx.searchHistory?.updateMany?.({
             where: {
                 user_id: userId,
@@ -515,7 +636,6 @@ export class CalendarService {
             },
             data: { expires_at: new Date() },
         });
-        await invalidateUserSearchCache(userId);
     }
 
     private async linkCalendarEventsToDiaries(userId: string) {
@@ -611,8 +731,9 @@ export class CalendarService {
                       AND source_id = ${diary.id}::text
                 `;
 
-                await this.expireSearchCache(tx, userId);
+                await this.expireSearchHistory(tx, userId);
             });
+            await invalidateUserSearchCache(userId);
 
             linkedDiaryCount += 1;
             linkedEventCount += linkedEventIds.length;

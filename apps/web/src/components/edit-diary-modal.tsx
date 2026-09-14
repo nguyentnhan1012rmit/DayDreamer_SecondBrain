@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import type { DiaryMood } from "@/lib/api-client";
+import type { DiaryMood } from "@/lib/api/diary-api";
 import { MOOD_OPTIONS } from "@/lib/mood-meta";
 
 function normalizeTag(value: string) {
@@ -22,7 +22,12 @@ type EditDiaryModalProps = {
   initialMood?: DiaryMood | null;
   initialTags?: string[];
   isLoading?: boolean;
-  onSave: (data: { title: string; content: string; mood: DiaryMood; tags: string[] }) => void;
+  onSave: (data: {
+    title: string;
+    content: string;
+    mood: DiaryMood;
+    tags: string[];
+  }) => void;
   onCancel: () => void;
 };
 
@@ -103,14 +108,18 @@ export function EditDiaryModal({
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-        onClick={() => { if (!isLoading) onCancel(); }}
+        onClick={() => {
+          if (!isLoading) onCancel();
+        }}
       />
 
       {/* Modal */}
       <div className="animate-modal-in relative max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-800">
         {/* Header */}
         <div className="mb-5 flex items-center justify-between">
-          <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">Edit Diary Entry</h3>
+          <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100">
+            Edit Diary Entry
+          </h3>
           <button
             type="button"
             onClick={onCancel}
@@ -125,7 +134,10 @@ export function EditDiaryModal({
         {/* Form */}
         <div className="space-y-4">
           <div>
-            <label htmlFor="edit-title" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+            <label
+              htmlFor="edit-title"
+              className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300"
+            >
               Title
             </label>
             <input
@@ -138,7 +150,10 @@ export function EditDiaryModal({
             />
           </div>
           <div>
-            <label htmlFor="edit-content" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+            <label
+              htmlFor="edit-content"
+              className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300"
+            >
               Content
             </label>
             <textarea
@@ -175,14 +190,19 @@ export function EditDiaryModal({
                       <MoodIcon className="h-4 w-4" aria-hidden="true" />
                       {option.label}
                     </span>
-                    <span className="mt-1 block text-xs font-normal opacity-75">{option.description}</span>
+                    <span className="mt-1 block text-xs font-normal opacity-75">
+                      {option.description}
+                    </span>
                   </button>
                 );
               })}
             </div>
           </div>
           <div>
-            <label htmlFor="edit-tags" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+            <label
+              htmlFor="edit-tags"
+              className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300"
+            >
               Tags
             </label>
             <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 transition focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 dark:border-slate-600 dark:bg-slate-700 dark:focus-within:border-indigo-500 dark:focus-within:ring-indigo-900/40">
@@ -212,7 +232,9 @@ export function EditDiaryModal({
                   onBlur={() => addTag()}
                   disabled={isLoading}
                   maxLength={32}
-                  placeholder={tags.length ? "Add another tag" : "project, health, meeting"}
+                  placeholder={
+                    tags.length ? "Add another tag" : "project, health, meeting"
+                  }
                   className="min-w-32 flex-1 bg-transparent px-1 py-1.5 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:opacity-50 dark:text-slate-100 dark:placeholder:text-slate-500"
                 />
               </div>
@@ -233,7 +255,14 @@ export function EditDiaryModal({
           <button
             type="button"
             disabled={!canSave || isLoading}
-            onClick={() => onSave({ title: title.trim(), content: content.trim(), mood, tags })}
+            onClick={() =>
+              onSave({
+                title: title.trim(),
+                content: content.trim(),
+                mood,
+                tags,
+              })
+            }
             className="action-primary disabled:cursor-not-allowed"
           >
             {isLoading ? "Saving…" : "Save Changes"}

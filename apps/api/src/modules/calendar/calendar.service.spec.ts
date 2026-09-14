@@ -1,6 +1,11 @@
 import { NotFoundException } from '@nestjs/common';
 import { CalendarService } from './calendar.service';
 
+jest.mock('@second-brain/db', () => ({
+  ...jest.requireActual('@second-brain/db'),
+  markMemorySourcesChanged: jest.fn().mockResolvedValue(1n),
+}));
+
 const mockGenerateAuthUrl = jest.fn((args: { state: string }) => {
   return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(args.state)}`;
 });
@@ -332,6 +337,28 @@ describe('CalendarService', () => {
         take: 20,
       }),
     );
+  });
+
+  it('paginates Calendar events until Google returns a sync token', async () => {
+    mockCalendarEventsList
+      .mockResolvedValueOnce({ data: { items: [{ id: 'event-1' }], nextPageToken: 'page-2' } })
+      .mockResolvedValueOnce({ data: { items: [{ id: 'event-2' }], nextSyncToken: 'sync-42' } });
+
+    const result = await (service as any).listCalendarEventPages(
+      { events: { list: mockCalendarEventsList } },
+      {
+        pageSize: 250,
+        timeMin: new Date('2026-01-01T00:00:00.000Z'),
+        timeMax: new Date('2026-02-01T00:00:00.000Z'),
+      },
+    );
+
+    expect(mockCalendarEventsList).toHaveBeenCalledTimes(2);
+    expect(mockCalendarEventsList.mock.calls[1][0].pageToken).toBe('page-2');
+    expect(result).toEqual({
+      events: [{ id: 'event-1' }, { id: 'event-2' }],
+      nextSyncToken: 'sync-42',
+    });
   });
 
   it('throws when the authenticated user cannot be resolved', async () => {

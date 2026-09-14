@@ -62,6 +62,9 @@ importers:
       '@second-brain/ai':
         specifier: workspace:*
         version: link:../../packages/ai
+      '@second-brain/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@second-brain/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -4,6 +4,9 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
+  HttpException,
+  HttpStatus,
   NotFoundException,
   Param,
   Post,
@@ -18,8 +21,12 @@ import {
   StreamableFile,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { deleteMemoryChunksForSource } from '@second-brain/db';
+import {
+  deleteMemoryChunksForSource,
+  markMemorySourcesChanged,
+} from '@second-brain/db';
 import type { Response } from 'express';
+import { createHash } from 'node:crypto';
 import { StorageService } from '../../storage/storage.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -104,6 +111,7 @@ export class UploadController {
     @Request() req: { user: { userId: string } },
     @Param('id') attachmentId: string,
     @Res({ passthrough: true }) response: Response,
+    @Headers('range') rangeHeader?: string,
   ) {
     const user = await this.findUserOrThrow(req.user.userId);
     const attachment = await this.prisma.attachment.findFirst({
@@ -123,23 +131,42 @@ export class UploadController {
       throw new NotFoundException('Attachment not found.');
     }
 
-    const content = await this.storageService.downloadFile(
+    const content = await this.storageService.streamFile(
       'attachments-bucket',
       attachment.storage_path,
+      rangeHeader,
     );
     const fileName = this.getStoredFileName(attachment.storage_path).replace(
       /["\r\n]/g,
       '_',
     );
 
+    if (content.statusCode === HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE) {
+      if (content.contentRange) {
+        response.set('Content-Range', content.contentRange);
+      }
+      throw new HttpException(
+        'Requested range is not satisfiable',
+        HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+      );
+    }
     response.set({
+      'Accept-Ranges': 'bytes',
       'Cache-Control': 'private, max-age=300',
       'Content-Disposition': `inline; filename="${fileName}"`,
-      'Content-Length': String(content.length),
       'Content-Type': attachment.file_type || 'application/octet-stream',
+      ...(content.contentLength
+        ? { 'Content-Length': content.contentLength }
+        : {}),
+      ...(content.contentRange
+        ? { 'Content-Range': content.contentRange }
+        : {}),
     });
+    if (content.statusCode === HttpStatus.PARTIAL_CONTENT) {
+      response.status(HttpStatus.PARTIAL_CONTENT);
+    }
 
-    return new StreamableFile(content);
+    return new StreamableFile(content.stream);
   }
 
   @Post('attachment')
@@ -206,6 +233,9 @@ export class UploadController {
             storage_path: uploadedFile.path,
             file_type: file.mimetype,
             ...(extractedText && { extracted_text: extractedText }),
+            content_hash: createHash('sha256').update(file.buffer).digest('hex'),
+            extraction_status: extractedText ? 'complete' : 'pending',
+            extraction_completeness: extractedText ? 1 : null,
           },
         });
 
@@ -214,9 +244,15 @@ export class UploadController {
           attachmentId: created.id,
           sourceTitle: file.originalname,
         });
+        await markMemorySourcesChanged(tx as any, {
+          userId: user.id,
+          occurredFrom: diaryEntry.entry_date,
+          occurredTo: diaryEntry.entry_date,
+        });
 
         return created;
       });
+      await invalidateUserSearchCache(user.id);
     } catch (error) {
       await this.storageService
         .deleteFile('attachments-bucket', uploadedFile.path)
@@ -267,28 +303,39 @@ export class UploadController {
       throw new NotFoundException('Attachment not found.');
     }
 
-    const requiresFreshExtraction = isAttachmentExtractionFallback(
-      attachment.extracted_text,
-    );
-    if (requiresFreshExtraction) {
-      await Promise.all([
-        this.prisma.attachment.update({
+    const requiresFreshExtraction =
+      attachment.extraction_status === 'failed' ||
+      isAttachmentExtractionFallback(attachment.extracted_text);
+    await this.prisma.$transaction(async (tx) => {
+      if (requiresFreshExtraction) {
+        await tx.attachment.update({
           where: { id: attachment.id },
-          data: { extracted_text: null },
-        }),
-        deleteMemoryChunksForSource(this.prisma as any, {
+          data: {
+            extracted_text: null,
+            extraction_status: 'pending',
+            extraction_completeness: null,
+            extraction_error: null,
+          },
+        });
+        await deleteMemoryChunksForSource(tx as any, {
           userId: user.id,
           sourceType: 'attachment',
           sourceId: attachment.id,
-        }),
-      ]);
-    }
+        });
+        await markMemorySourcesChanged(tx as any, {
+          userId: user.id,
+          occurredFrom: attachment.diary_entry.entry_date,
+          occurredTo: attachment.diary_entry.entry_date,
+        });
+      }
 
-    await this.enqueueAttachmentIndexingJob(this.prisma, {
-      userId: user.id,
-      attachmentId: attachment.id,
-      sourceTitle: this.getStoredFileName(attachment.storage_path),
+      await this.enqueueAttachmentIndexingJob(tx, {
+        userId: user.id,
+        attachmentId: attachment.id,
+        sourceTitle: this.getStoredFileName(attachment.storage_path),
+      });
     });
+    await invalidateUserSearchCache(user.id);
 
     return {
       message: 'Attachment processing queued',
@@ -339,6 +386,7 @@ export class UploadController {
         retry_count: 0,
         error: null,
         payload: { sourceTitle: input.sourceTitle },
+        generation: { increment: 1 },
         run_after: new Date(),
         locked_at: null,
         locked_by: null,
@@ -361,8 +409,6 @@ export class UploadController {
       },
       data: { expires_at: new Date() },
     });
-    await invalidateUserSearchCache(input.userId);
-
     return job;
   }
 
@@ -389,6 +435,9 @@ export class UploadController {
     storage_path: string;
     file_type: string;
     extracted_text: string | null;
+    extraction_status?: string;
+    extraction_completeness?: number | null;
+    extraction_error?: string | null;
     created_at: Date;
     diary_entry?: {
       id: string;
@@ -409,11 +458,13 @@ export class UploadController {
       id: attachment.id,
       diaryEntryId: attachment.diary_entry_id,
       fileType: attachment.file_type,
-      extractionStatus: extractionFailed
+      extractionStatus: attachment.extraction_status === 'failed' || extractionFailed
         ? 'failed'
         : usableExtractedText
           ? 'extracted'
           : 'pending',
+      extractionCompleteness: attachment.extraction_completeness ?? undefined,
+      extractionError: attachment.extraction_error ?? undefined,
       extractedTextPreview: usableExtractedText
         ? usableExtractedText.slice(0, 800)
         : undefined,

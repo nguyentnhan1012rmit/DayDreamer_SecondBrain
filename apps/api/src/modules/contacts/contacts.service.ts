@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { google, people_v1 } from 'googleapis';
+import { markMemorySourcesChanged } from '@second-brain/db';
 import { PrismaService } from '../../prisma/prisma.service';
 import { decryptOAuthToken, encryptOAuthToken } from '../calendar/oauth-token-crypto';
 import { invalidateUserSearchCache } from '../../common/cache/search-answer-cache';
@@ -225,6 +226,10 @@ export class ContactsService {
           queuedCount += 1;
         }
 
+        if (normalizedContacts.length) {
+          await markMemorySourcesChanged(tx as any, { userId: user.id });
+        }
+
         return queuedCount;
       });
 
@@ -338,6 +343,7 @@ export class ContactsService {
           externalId: input.externalId,
           sourceTitle: input.displayName,
         },
+        generation: { increment: 1 },
         run_after: new Date(),
         locked_at: null,
         locked_by: null,

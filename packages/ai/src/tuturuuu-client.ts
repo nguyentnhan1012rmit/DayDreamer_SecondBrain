@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 export const DEFAULT_TUTURUUU_API_BASE_URL = "https://ai.tuturuuu.com/v1";
 export const DEFAULT_TUTURUUU_RESPONSE_MODEL = "google/gemini-3.5-flash-lite";
 export const DEFAULT_TUTURUUU_EMBEDDING_MODEL = "google/gemini-embedding-2";
+const DEFAULT_TUTURUUU_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_TUTURUUU_REQUEST_TIMEOUT_MS = 5 * 60_000;
+
+export type TuturuuuJsonSchema = Record<string, unknown>;
 
 export interface TuturuuuTokenUsage {
   inputTokens: number;
@@ -16,8 +20,15 @@ export interface TuturuuuGenerateTextOptions {
   model?: string;
   systemPrompt?: string;
   maxOutputTokens?: number;
+  temperature?: number;
+  responseSchema?: TuturuuuJsonSchema;
+  responseSchemaName?: string;
+  responseSchemaDescription?: string;
+  responseSchemaStrict?: boolean;
   idempotencyKey?: string;
   requestId?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
   responseInput?: TuturuuuResponseInput;
 }
 
@@ -35,6 +46,8 @@ export interface TuturuuuEmbeddingOptions {
   dimensions?: number;
   idempotencyKey?: string;
   requestId?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface TuturuuuEmbeddingResult {
@@ -123,6 +136,7 @@ export async function generateTuturuuuText(
     DEFAULT_TUTURUUU_RESPONSE_MODEL,
   );
   const requestId = options.requestId ?? randomUUID();
+  const responseSchemaStrict = options.responseSchemaStrict ?? true;
   const payload = await requestTuturuuuJson("/responses", {
     method: "POST",
     requestId,
@@ -132,7 +146,23 @@ export async function generateTuturuuuText(
       instructions: options.systemPrompt,
       input: options.responseInput ?? options.prompt,
       max_output_tokens: options.maxOutputTokens,
+      temperature: normalizeTemperature(options.temperature),
+      text: options.responseSchema
+        ? {
+            format: {
+              type: "json_schema",
+              name: normalizeResponseSchemaName(options.responseSchemaName),
+              description: options.responseSchemaDescription,
+              schema: responseSchemaStrict
+                ? toStrictJsonSchema(options.responseSchema)
+                : options.responseSchema,
+              strict: responseSchemaStrict,
+            },
+          }
+        : undefined,
     },
+    timeoutMs: options.timeoutMs,
+    signal: options.signal,
   });
 
   const output = extractOutputText(payload).trim();
@@ -160,6 +190,8 @@ export async function generateTuturuuuVisionText(options: {
   maxOutputTokens?: number;
   idempotencyKey?: string;
   requestId?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<TuturuuuGenerateTextResult> {
   const imageUrl =
     options.imageUrl ??
@@ -176,6 +208,8 @@ export async function generateTuturuuuVisionText(options: {
     maxOutputTokens: options.maxOutputTokens,
     idempotencyKey: options.idempotencyKey,
     requestId: options.requestId,
+    timeoutMs: options.timeoutMs,
+    signal: options.signal,
     responseInput: [
       {
         role: "user",
@@ -198,6 +232,8 @@ export async function generateTuturuuuFileText(options: {
   maxOutputTokens?: number;
   idempotencyKey?: string;
   requestId?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<TuturuuuGenerateTextResult> {
   const fileInput = options.fileUrl
     ? {
@@ -222,6 +258,8 @@ export async function generateTuturuuuFileText(options: {
     maxOutputTokens: options.maxOutputTokens,
     idempotencyKey: options.idempotencyKey,
     requestId: options.requestId,
+    timeoutMs: options.timeoutMs,
+    signal: options.signal,
     responseInput: [
       {
         role: "user",
@@ -240,6 +278,8 @@ export async function generateTuturuuuAudioTranscript(options: {
   maxOutputTokens?: number;
   idempotencyKey?: string;
   requestId?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<TuturuuuGenerateTextResult> {
   const format = getAudioInputFormat(options.mimeType, options.fileName);
 
@@ -249,6 +289,8 @@ export async function generateTuturuuuAudioTranscript(options: {
     maxOutputTokens: options.maxOutputTokens,
     idempotencyKey: options.idempotencyKey,
     requestId: options.requestId,
+    timeoutMs: options.timeoutMs,
+    signal: options.signal,
     responseInput: [
       {
         role: "user",
@@ -310,6 +352,8 @@ export async function embedTuturuuu(
       input: options.input,
       dimensions: options.dimensions,
     },
+    timeoutMs: options.timeoutMs,
+    signal: options.signal,
   });
 
   const embeddings = extractEmbeddings(payload);
@@ -332,45 +376,154 @@ async function requestTuturuuuJson(
     requestId: string;
     idempotencyKey?: string;
     body?: Record<string, unknown>;
+    timeoutMs?: number;
+    signal?: AbortSignal;
   },
 ): Promise<Record<string, unknown> & { requestId?: string }> {
-  const response = await fetch(`${getTuturuuuApiBaseUrl()}${path}`, {
-    method: options.method,
-    headers: {
-      Authorization: `Bearer ${requireTuturuuuApiKey()}`,
-      "Content-Type": "application/json",
-      "X-Request-Id": options.requestId,
-      ...(options.idempotencyKey
-        ? { "Idempotency-Key": options.idempotencyKey }
-        : {}),
-    },
-    body: options.body
-      ? JSON.stringify(stripUndefined(options.body))
-      : undefined,
-  });
+  const timeoutMs = resolveRequestTimeoutMs(options.timeoutMs);
+  const abortContext = createRequestAbortContext(timeoutMs, options.signal);
 
-  const payload = await response.json().catch(() => null);
-  const responseRequestId =
-    response.headers.get("x-request-id") ?? options.requestId;
-  if (!response.ok) {
-    const error = buildTuturuuuError(
-      payload,
-      response.status,
-      responseRequestId,
-    );
+  try {
+    const response = await fetch(`${getTuturuuuApiBaseUrl()}${path}`, {
+      method: options.method,
+      headers: {
+        Authorization: `Bearer ${requireTuturuuuApiKey()}`,
+        "Content-Type": "application/json",
+        "X-Request-Id": options.requestId,
+        ...(options.idempotencyKey
+          ? { "Idempotency-Key": options.idempotencyKey }
+          : {}),
+      },
+      body: options.body
+        ? JSON.stringify(stripUndefined(options.body))
+        : undefined,
+      signal: abortContext.signal,
+    });
+
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (abortContext.signal.aborted) throw error;
+    }
+    const responseRequestId =
+      response.headers.get("x-request-id") ?? options.requestId;
+    if (!response.ok) {
+      const error = buildTuturuuuError(
+        payload,
+        response.status,
+        responseRequestId,
+      );
+      throw error;
+    }
+
+    if (!payload || typeof payload !== "object") {
+      throw new Error(
+        `Tuturuuu AI API returned a non-JSON response (${responseRequestId}).`,
+      );
+    }
+
+    return {
+      ...(payload as Record<string, unknown>),
+      requestId: responseRequestId,
+    };
+  } catch (error) {
+    if (abortContext.didTimeout()) {
+      throw buildTuturuuuTimeoutError(timeoutMs, options.requestId);
+    }
     throw error;
+  } finally {
+    abortContext.cleanup();
+  }
+}
+
+function resolveRequestTimeoutMs(value: number | undefined): number {
+  const configured = Number(
+    value ??
+      readEnv("TUTURUUU_REQUEST_TIMEOUT_MS") ??
+      DEFAULT_TUTURUUU_REQUEST_TIMEOUT_MS,
+  );
+  if (!Number.isFinite(configured)) return DEFAULT_TUTURUUU_REQUEST_TIMEOUT_MS;
+  return Math.min(
+    MAX_TUTURUUU_REQUEST_TIMEOUT_MS,
+    Math.max(100, Math.floor(configured)),
+  );
+}
+
+function createRequestAbortContext(
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): {
+  signal: AbortSignal;
+  didTimeout: () => boolean;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  let timedOut = false;
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+
+  if (externalSignal?.aborted) {
+    onExternalAbort();
+  } else {
+    externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   }
 
-  if (!payload || typeof payload !== "object") {
-    throw new Error(
-      `Tuturuuu AI API returned a non-JSON response (${responseRequestId}).`,
-    );
-  }
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   return {
-    ...(payload as Record<string, unknown>),
-    requestId: responseRequestId,
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    },
   };
+}
+
+function buildTuturuuuTimeoutError(timeoutMs: number, requestId: string): Error {
+  const error = new Error(
+    `Tuturuuu AI request timed out after ${timeoutMs}ms (${requestId}).`,
+  );
+  error.name = "TuturuuuTimeoutError";
+  (error as { code?: string }).code = "TUTURUUU_TIMEOUT";
+  (error as { status?: number }).status = 408;
+  return error;
+}
+
+function normalizeTemperature(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0 || value > 2) {
+    throw new Error("Tuturuuu temperature must be a finite number from 0 to 2.");
+  }
+  return value;
+}
+
+function normalizeResponseSchemaName(value: string | undefined): string {
+  const normalized = (value ?? "structured_response")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+  return normalized || "structured_response";
+}
+
+function toStrictJsonSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(toStrictJsonSchema);
+  if (!value || typeof value !== "object") return value;
+
+  const schema = Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      toStrictJsonSchema(item),
+    ]),
+  );
+  if (schema.type === "object" && schema.additionalProperties === undefined) {
+    schema.additionalProperties = false;
+  }
+  return schema;
 }
 
 function buildTuturuuuError(

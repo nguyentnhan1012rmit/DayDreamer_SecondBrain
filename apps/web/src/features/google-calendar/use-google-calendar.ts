@@ -1,26 +1,26 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams, useRouter, usePathname } from 'next/navigation';
-import type { useAuth } from '@/contexts/AuthContext';
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import type { useAuth } from "@/contexts/AuthContext";
 import type {
   CalendarConnectionStatus,
   CalendarEvent,
   CalendarFeedback,
   CalendarError,
-} from './google-calendar-types';
+} from "./google-calendar-types";
 import {
   fetchCalendarStatus,
   fetchCalendarEvents,
   fetchCalendarConnectUrl,
   syncCalendar,
   toCalendarError,
-} from './google-calendar-api';
+} from "./google-calendar-api";
 import {
   parseCalendarCallbackParams,
   buildCalendarFeedback,
   isSafeRedirectUrl,
-} from './google-calendar-utils';
+} from "./google-calendar-utils";
 
 type AuthContextValue = ReturnType<typeof useAuth>;
 
@@ -66,7 +66,7 @@ export function useGoogleCalendarIntegration(auth: AuthContextValue) {
       setEvents(eventsResult);
     } catch (err) {
       if (!mountedRef.current) return;
-      setError(toCalendarError(err, 'Could not load Calendar status.'));
+      setError(toCalendarError(err, "Could not load Calendar status."));
     } finally {
       if (mountedRef.current) {
         setIsLoading(false);
@@ -81,7 +81,9 @@ export function useGoogleCalendarIntegration(auth: AuthContextValue) {
       Promise.resolve().then(() => {
         if (!cancelled) void loadCalendar();
       });
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true;
+      };
     }
     let cancelled = false;
     Promise.resolve().then(() => {
@@ -91,29 +93,34 @@ export function useGoogleCalendarIntegration(auth: AuthContextValue) {
       setError(null);
       setFeedback(null);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [isAuthenticated, loadCalendar]);
 
   useEffect(() => {
-    const { result, reason, source } = parseCalendarCallbackParams(searchParams);
+    const { result, reason, source } =
+      parseCalendarCallbackParams(searchParams);
     if (!result) return;
 
     let cancelled = false;
     Promise.resolve().then(() => {
       if (cancelled || !mountedRef.current) return;
       setFeedback(buildCalendarFeedback(result, reason, source));
-      if (result === 'connected') {
+      if (result === "connected") {
         void loadCalendar();
       }
     });
 
     const params = new URLSearchParams(searchParams.toString());
-    params.delete('calendar');
-    params.delete('source');
-    params.delete('reason');
+    params.delete("calendar");
+    params.delete("source");
+    params.delete("reason");
     const remaining = params.toString();
     router.replace(remaining ? `${pathname}?${remaining}` : pathname);
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [searchParams, router, pathname, loadCalendar]);
 
   const connectCalendar = useCallback(async () => {
@@ -122,16 +129,19 @@ export function useGoogleCalendarIntegration(auth: AuthContextValue) {
     setError(null);
     try {
       const token = getAccessToken();
-      const url = await fetchCalendarConnectUrl(token, 'calendar');
+      const url = await fetchCalendarConnectUrl(token, "calendar");
       if (!isSafeRedirectUrl(url)) {
-        throw new Error('Received an invalid redirect URL from the server.');
+        throw new Error("Received an invalid redirect URL from the server.");
       }
       window.location.href = url;
     } catch (err) {
       if (!mountedRef.current) return;
-      const calendarError = toCalendarError(err, 'Could not start Google Calendar connection.');
+      const calendarError = toCalendarError(
+        err,
+        "Could not start Google Calendar connection.",
+      );
       setError(calendarError);
-      setFeedback({ type: 'error', text: calendarError.message });
+      setFeedback({ type: "error", text: calendarError.message });
       setIsConnecting(false);
     }
   }, [getAccessToken]);
@@ -140,30 +150,36 @@ export function useGoogleCalendarIntegration(auth: AuthContextValue) {
     await connectCalendar();
   }, [connectCalendar]);
 
-  const syncCalendarEvents = useCallback(async (limit?: number) => {
-    setIsSyncing(true);
-    setFeedback(null);
-    setError(null);
-    try {
-      const token = getAccessToken();
-      const result = await syncCalendar(token, limit);
-      if (!mountedRef.current) return;
-      setFeedback({
-        type: 'success',
-        text: `Calendar synced: ${result.syncedCount} event${result.syncedCount === 1 ? '' : 's'} synced.`,
-      });
-      await loadCalendar();
-    } catch (err) {
-      if (!mountedRef.current) return;
-      const calendarError = toCalendarError(err, 'Could not sync Google Calendar.');
-      setError(calendarError);
-      setFeedback({ type: 'error', text: calendarError.message });
-    } finally {
-      if (mountedRef.current) {
-        setIsSyncing(false);
+  const syncCalendarEvents = useCallback(
+    async (limit?: number) => {
+      setIsSyncing(true);
+      setFeedback(null);
+      setError(null);
+      try {
+        const token = getAccessToken();
+        const result = await syncCalendar(token, limit);
+        if (!mountedRef.current) return;
+        setFeedback({
+          type: "success",
+          text: `Calendar synced: ${result.syncedCount} event${result.syncedCount === 1 ? "" : "s"} synced.`,
+        });
+        await loadCalendar();
+      } catch (err) {
+        if (!mountedRef.current) return;
+        const calendarError = toCalendarError(
+          err,
+          "Could not sync Google Calendar.",
+        );
+        setError(calendarError);
+        setFeedback({ type: "error", text: calendarError.message });
+      } finally {
+        if (mountedRef.current) {
+          setIsSyncing(false);
+        }
       }
-    }
-  }, [getAccessToken, loadCalendar]);
+    },
+    [getAccessToken, loadCalendar],
+  );
 
   const refreshCalendar = useCallback(async () => {
     loadingRef.current = false;

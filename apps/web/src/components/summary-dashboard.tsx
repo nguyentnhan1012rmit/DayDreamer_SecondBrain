@@ -3,73 +3,35 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChartNoAxesColumnIncreasing } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { MOOD_META } from "@/lib/mood-meta";
+import {
+  buildDailySummaries,
+  buildWeeklySummaries,
+  countWords,
+  formatMemoryDay,
+  getDominantMood,
+  getEntryActivityDate,
+  getLatestEntryDateInputValue,
+  getLocalDateInputValue,
+  getTopKeywords,
+  getTopTags,
+  type DailyMemorySummary as DailySummary,
+  type WeeklyMemorySummary as WeeklySummary,
+} from "@/features/insights/memory-insights";
+import {
+  getDiaryEntries,
+  getDiaryStatistics,
+  type DiaryEntry,
+  type DiaryStatistics,
+} from "@/lib/api/diary-api";
 import {
   generateSummary,
-  getDiaryEntries,
   getSummaries,
-  type DiaryEntry,
   type SummaryRecord,
   type SummaryType,
-} from "@/lib/api-client";
+} from "@/lib/api/summary-api";
 
 type LoadState = "idle" | "loading" | "success" | "error";
 type OverviewMode = "daily" | "weekly";
-
-type DailySummary = {
-  dateKey: string;
-  label: string;
-  entries: DiaryEntry[];
-  wordCount: number;
-  readingMinutes: number;
-  topKeywords: string[];
-};
-
-type WeeklySummary = {
-  weekKey: string;
-  label: string;
-  entries: DiaryEntry[];
-  wordCount: number;
-  activeDays: number;
-  averageWords: number;
-  narrative: string;
-};
-
-const stopWords = new Set([
-  "the",
-  "and",
-  "for",
-  "with",
-  "that",
-  "this",
-  "was",
-  "were",
-  "from",
-  "have",
-  "has",
-  "had",
-  "about",
-  "into",
-  "our",
-  "you",
-  "your",
-  "today",
-  "also",
-  "will",
-  "their",
-  "there",
-]);
-
-const weekdayFormatter = new Intl.DateTimeFormat("en", {
-  weekday: "short",
-  month: "short",
-  day: "numeric",
-});
-
-const weekFormatter = new Intl.DateTimeFormat("en", {
-  month: "short",
-  day: "numeric",
-});
 
 const summaryTypeOptions: SummaryType[] = [
   "daily",
@@ -78,177 +40,10 @@ const summaryTypeOptions: SummaryType[] = [
   "yearly",
 ];
 
-function countWords(text: string) {
-  return text.trim().split(/\s+/).filter(Boolean).length;
-}
-
-function getEntryActivityDate(entry: DiaryEntry) {
-  return entry.entryDate ?? entry.createdAt;
-}
-
-function getDateKey(value: string) {
-  const date = new Date(value);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function getLocalDateInputValue(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function getLatestEntryDateInputValue(entries: DiaryEntry[]) {
-  const latest = [...entries].sort(
-    (first, second) =>
-      new Date(getEntryActivityDate(second)).getTime() -
-      new Date(getEntryActivityDate(first)).getTime(),
-  )[0];
-
-  return latest ? getDateKey(getEntryActivityDate(latest)) : null;
-}
-
-function getWeekStart(date: Date) {
-  const start = new Date(date);
-  const day = start.getDay();
-  const diff = start.getDate() - day + (day === 0 ? -6 : 1);
-  start.setDate(diff);
-  start.setHours(0, 0, 0, 0);
-  return start;
-}
-
-function getTopKeywords(entries: DiaryEntry[]) {
-  const counts = new Map<string, number>();
-
-  entries.forEach((entry) => {
-    `${entry.title} ${entry.content}`
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((word) => word.length > 3 && !stopWords.has(word))
-      .forEach((word) => counts.set(word, (counts.get(word) ?? 0) + 1));
-  });
-
-  return [...counts.entries()]
-    .sort((first, second) => second[1] - first[1])
-    .slice(0, 4)
-    .map(([word]) => word);
-}
-
-function getTopTags(entries: DiaryEntry[]) {
-  const counts = new Map<string, number>();
-
-  entries.forEach((entry) => {
-    (entry.tags ?? []).forEach((tag) => {
-      counts.set(tag, (counts.get(tag) ?? 0) + 1);
-    });
-  });
-
-  return [...counts.entries()]
-    .sort((first, second) => second[1] - first[1])
-    .slice(0, 5)
-    .map(([tag]) => tag);
-}
-
-function getDominantMood(entries: DiaryEntry[]) {
-  const counts = new Map<string, number>();
-
-  entries.forEach((entry) => {
-    if (entry.mood) {
-      counts.set(entry.mood, (counts.get(entry.mood) ?? 0) + 1);
-    }
-  });
-
-  const dominant = [...counts.entries()].sort(
-    (first, second) => second[1] - first[1],
-  )[0];
-  if (!dominant) return null;
-
-  return {
-    label:
-      MOOD_META[dominant[0] as keyof typeof MOOD_META]?.label ?? dominant[0],
-    count: dominant[1],
-  };
-}
-
-function buildDailySummaries(entries: DiaryEntry[]) {
-  const grouped = new Map<string, DiaryEntry[]>();
-
-  entries.forEach((entry) => {
-    const key = getDateKey(getEntryActivityDate(entry));
-    grouped.set(key, [...(grouped.get(key) ?? []), entry]);
-  });
-
-  return [...grouped.entries()]
-    .sort(([first], [second]) => second.localeCompare(first))
-    .map(([dateKey, dayEntries]) => {
-      const wordCount = dayEntries.reduce(
-        (total, entry) => total + countWords(`${entry.title} ${entry.content}`),
-        0,
-      );
-
-      return {
-        dateKey,
-        label: weekdayFormatter.format(new Date(dateKey)),
-        entries: dayEntries,
-        wordCount,
-        readingMinutes: Math.max(1, Math.ceil(wordCount / 200)),
-        topKeywords: getTopKeywords(dayEntries),
-      };
-    });
-}
-
-function buildWeeklySummaries(entries: DiaryEntry[]) {
-  const grouped = new Map<string, DiaryEntry[]>();
-
-  entries.forEach((entry) => {
-    const weekStart = getWeekStart(new Date(getEntryActivityDate(entry)));
-    const key = weekStart.toISOString().slice(0, 10);
-    grouped.set(key, [...(grouped.get(key) ?? []), entry]);
-  });
-
-  return [...grouped.entries()]
-    .sort(([first], [second]) => second.localeCompare(first))
-    .map(([weekKey, weekEntries]) => {
-      const start = new Date(weekKey);
-      const end = new Date(start);
-      end.setDate(start.getDate() + 6);
-      const wordCount = weekEntries.reduce(
-        (total, entry) => total + countWords(`${entry.title} ${entry.content}`),
-        0,
-      );
-      const activeDays = new Set(
-        weekEntries.map((entry) => getDateKey(getEntryActivityDate(entry))),
-      ).size;
-      const themes = getTopKeywords(weekEntries).slice(0, 3);
-      const mood = getDominantMood(weekEntries);
-      const cadence =
-        activeDays >= 5
-          ? "You kept a steady writing rhythm"
-          : activeDays >= 3
-            ? "You returned to your diary several times"
-            : "You captured a small set of moments";
-      const themeSentence = themes.length
-        ? `Your memories kept circling around ${new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(themes)}.`
-        : "More entries will make the recurring themes clearer.";
-      const moodSentence = mood
-        ? `The most common emotional tone was ${mood.label.toLocaleLowerCase()}.`
-        : "Mood was not tagged often enough to show a pattern yet.";
-
-      return {
-        weekKey,
-        label: `${weekFormatter.format(start)} - ${weekFormatter.format(end)}`,
-        entries: weekEntries,
-        wordCount,
-        activeDays,
-        averageWords: Math.round(wordCount / Math.max(activeDays, 1)),
-        narrative: `${cadence} across ${activeDays} active day${activeDays === 1 ? "" : "s"}. ${themeSentence} ${moodSentence}`,
-      };
-    });
-}
+const summaryPeriodFormatter = new Intl.DateTimeFormat("en", {
+  month: "short",
+  day: "numeric",
+});
 
 function StatCard({
   label,
@@ -275,8 +70,8 @@ function StatCard({
 }
 
 function formatSummaryPeriod(summary: SummaryRecord) {
-  const start = weekFormatter.format(new Date(summary.periodStart));
-  const end = weekFormatter.format(new Date(summary.periodEnd));
+  const start = summaryPeriodFormatter.format(new Date(summary.periodStart));
+  const end = summaryPeriodFormatter.format(new Date(summary.periodEnd));
   return start === end ? start : `${start} - ${end}`;
 }
 
@@ -568,6 +363,8 @@ export function SummaryDashboard() {
     isAdmin,
   } = useAuth();
   const [entries, setEntries] = useState<DiaryEntry[]>([]);
+  const [yearlyStatistics, setYearlyStatistics] =
+    useState<DiaryStatistics | null>(null);
   const [aiSummaries, setAiSummaries] = useState<SummaryRecord[]>([]);
   const [state, setState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
@@ -583,12 +380,7 @@ export function SummaryDashboard() {
   useEffect(() => {
     if (authLoading) return;
 
-    if (!isAuthenticated) {
-      setEntries([]);
-      setAiSummaries([]);
-      setState("idle");
-      return;
-    }
+    if (!isAuthenticated) return;
 
     async function fetchSummaryData() {
       setState("loading");
@@ -596,12 +388,18 @@ export function SummaryDashboard() {
 
       try {
         const accessToken = getAccessToken();
-        const [diaryData, summaryData] = await Promise.all([
-          getDiaryEntries(accessToken),
+        const [diaryData, summaryData, statisticsData] = await Promise.all([
+          getDiaryEntries(accessToken, { limit: 50 }),
           getSummaries(accessToken, { limit: 20 }),
+          getDiaryStatistics(accessToken, {
+            period: "yearly",
+            anchor: new Date(),
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          }),
         ]);
-        setEntries(diaryData);
-        const latestEntryDate = getLatestEntryDateInputValue(diaryData);
+        setEntries(diaryData.entries);
+        setYearlyStatistics(statisticsData);
+        const latestEntryDate = getLatestEntryDateInputValue(diaryData.entries);
         if (latestEntryDate) {
           setSummaryDate(latestEntryDate);
         }
@@ -637,7 +435,7 @@ export function SummaryDashboard() {
     () => buildWeeklySummaries(sortedEntries),
     [sortedEntries],
   );
-  const totalWords = useMemo(
+  const loadedTotalWords = useMemo(
     () =>
       sortedEntries.reduce(
         (total, entry) => total + countWords(`${entry.title} ${entry.content}`),
@@ -645,7 +443,8 @@ export function SummaryDashboard() {
       ),
     [sortedEntries],
   );
-  const activeDays = dailySummaries.length;
+  const totalWords = yearlyStatistics?.totalWords ?? loadedTotalWords;
+  const activeDays = yearlyStatistics?.activeDays ?? dailySummaries.length;
   const latestEntry = sortedEntries[0];
   const latestDay = dailySummaries[0];
   const latestWeek = weeklySummaries[0];
@@ -815,7 +614,7 @@ export function SummaryDashboard() {
           value={String(sortedEntries.length)}
           helper={
             latestEntry
-              ? `Latest: ${weekdayFormatter.format(new Date(getEntryActivityDate(latestEntry)))}`
+              ? `Latest: ${formatMemoryDay(getEntryActivityDate(latestEntry))}`
               : "Diary memories saved"
           }
         />
@@ -1057,9 +856,7 @@ export function SummaryDashboard() {
                     </p>
                   </div>
                   <span className="shrink-0 status-badge">
-                    {weekdayFormatter.format(
-                      new Date(getEntryActivityDate(entry)),
-                    )}
+                    {formatMemoryDay(getEntryActivityDate(entry))}
                   </span>
                 </div>
               </article>

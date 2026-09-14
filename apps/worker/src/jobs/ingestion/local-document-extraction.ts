@@ -25,29 +25,62 @@ export async function extractImageTextLocally(buffer: Buffer) {
 }
 
 export async function extractPdfTextLocally(buffer: Buffer) {
+  return (await extractPdfDocumentLocally(buffer)).text;
+}
+
+export type PdfExtractionResult = {
+  text: string;
+  status: "complete" | "partial";
+  completeness: number;
+  pageCount: number;
+  extractedPageCount: number;
+  ocrPageCount: number;
+  missingPageCount: number;
+};
+
+export async function extractPdfDocumentLocally(
+  buffer: Buffer,
+): Promise<PdfExtractionResult> {
   await ensureOfficialPdfModule();
   const pdf = await getDocumentProxy(new Uint8Array(buffer));
   const extracted = await extractText(pdf, { mergePages: false });
-  const textPages = extracted.text.map(normalizeExtractedText).filter(Boolean);
+  const pages = Array.from({ length: pdf.numPages }, (_, index) =>
+    normalizeExtractedText(extracted.text[index] ?? ""),
+  );
+  const ocrLimit = getPdfOcrPageLimit();
+  let ocrPageCount = 0;
 
-  if (textPages.join("\n").length >= 40) {
-    return formatPdfPages(textPages);
+  for (let pageNumber = 1; pageNumber <= Math.min(pdf.numPages, ocrLimit); pageNumber += 1) {
+    if (!needsPdfPageOcr(pages[pageNumber - 1])) continue;
+    try {
+      const rendered = await renderPageAsImage(pdf, pageNumber, {
+        canvasImport: () => import("@napi-rs/canvas"),
+        scale: 2,
+      });
+      if (typeof rendered === "string") continue;
+      const pageText = await extractImageTextLocally(Buffer.from(rendered));
+      if (pageText) {
+        pages[pageNumber - 1] = pageText;
+        ocrPageCount += 1;
+      }
+    } catch (error) {
+      console.warn(
+        `[Worker - Ingestion] OCR failed for PDF page ${pageNumber}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
-  const pageCount = Math.min(pdf.numPages, getPdfOcrPageLimit());
-  const ocrPages: string[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-    const rendered = await renderPageAsImage(pdf, pageNumber, {
-      canvasImport: () => import("@napi-rs/canvas"),
-      scale: 2,
-    });
-    if (typeof rendered === "string") continue;
-    const pageText = await extractImageTextLocally(Buffer.from(rendered));
-    if (pageText) ocrPages.push(pageText);
-  }
-
-  return formatPdfPages(ocrPages);
+  const extractedPageCount = pages.filter(Boolean).length;
+  const missingPageCount = Math.max(pdf.numPages - extractedPageCount, 0);
+  return {
+    text: formatPdfPages(pages),
+    status: missingPageCount === 0 ? "complete" : "partial",
+    completeness: pdf.numPages ? extractedPageCount / pdf.numPages : 0,
+    pageCount: pdf.numPages,
+    extractedPageCount,
+    ocrPageCount,
+    missingPageCount,
+  };
 }
 
 function getOcrWorker() {
@@ -79,9 +112,23 @@ function getPdfOcrPageLimit() {
   return Math.min(Math.max(Math.trunc(configured), 1), 100);
 }
 
+function getPdfPageTextThreshold() {
+  const configured = Number(process.env.PDF_PAGE_TEXT_MIN_CHARS ?? 20);
+  if (!Number.isFinite(configured)) return 20;
+  return Math.min(Math.max(Math.trunc(configured), 1), 500);
+}
+
+export function needsPdfPageOcr(
+  text: string,
+  minimumCharacters = getPdfPageTextThreshold(),
+) {
+  return normalizeExtractedText(text).length < minimumCharacters;
+}
+
 function formatPdfPages(pages: string[]) {
   return pages
-    .map((text, index) => `## Page ${index + 1}\n${text}`)
+    .map((text, index) => text ? `## Page ${index + 1}\n${text}` : "")
+    .filter(Boolean)
     .join("\n\n")
     .trim();
 }

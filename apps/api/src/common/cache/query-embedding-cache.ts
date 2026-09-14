@@ -3,12 +3,14 @@ import {
   TUTURUUU_EMBEDDING_MODEL,
   createDefaultEmbeddingProvider,
   type AdvancedEmbeddingProvider,
+  type QueryEmbeddingResult,
 } from '@second-brain/ai';
 import { hashRedisKey, redisClient } from '../redis/redis-client';
 
 const DEFAULT_QUERY_EMBEDDING_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-type QueryEmbedder = Pick<AdvancedEmbeddingProvider, 'embedQuery'>;
+type QueryEmbedder = Pick<AdvancedEmbeddingProvider, 'embedQuery'> &
+  Partial<Pick<AdvancedEmbeddingProvider, 'embedQueryWithMetadata'>>;
 type QueryEmbeddingCacheClient = Pick<
   typeof redisClient,
   'get' | 'setEx' | 'del' | 'isConfigured' | 'isConnected'
@@ -21,7 +23,7 @@ type CachedQueryEmbedding = {
 };
 
 export class RedisCachedQueryEmbeddingProvider implements QueryEmbedder {
-  private readonly inFlight = new Map<string, Promise<number[]>>();
+  private readonly inFlight = new Map<string, Promise<QueryEmbeddingResult>>();
 
   constructor(
     private readonly delegate: QueryEmbedder,
@@ -29,13 +31,25 @@ export class RedisCachedQueryEmbeddingProvider implements QueryEmbedder {
   ) {}
 
   async embedQuery(text: string): Promise<number[]> {
+    return (await this.embedQueryWithMetadata(text)).embedding;
+  }
+
+  async embedQueryWithMetadata(text: string): Promise<QueryEmbeddingResult> {
     const normalized = normalizeQuery(text);
-    if (!normalized) return this.delegate.embedQuery(text);
-    if (!this.isEnabled()) return this.delegate.embedQuery(text);
+    if (!normalized || !this.isEnabled()) {
+      return this.embedWithDelegate(text);
+    }
 
     const key = buildQueryEmbeddingCacheKey(normalized);
     const inFlight = this.inFlight.get(key);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      const result = await inFlight;
+      return {
+        embedding: result.embedding,
+        cacheStatus: 'warm',
+        cacheLayer: 'in_flight',
+      };
+    }
 
     const operation = this.getOrCreateEmbedding(key, text);
     this.inFlight.set(key, operation);
@@ -51,14 +65,21 @@ export class RedisCachedQueryEmbeddingProvider implements QueryEmbedder {
     try {
       const rawCached = await this.cache.get(key);
       const cached = parseCachedEmbedding(rawCached);
-      if (cached) return cached;
+      if (cached) {
+        return {
+          embedding: cached,
+          cacheStatus: 'warm',
+          cacheLayer: 'redis',
+        } satisfies QueryEmbeddingResult;
+      }
       if (rawCached) await this.cache.del(key).catch(() => undefined);
     } catch {
-      return this.delegate.embedQuery(text);
+      return this.embedWithDelegate(text);
     }
 
-    const embedding = await this.delegate.embedQuery(text);
-    if (!isValidEmbedding(embedding)) return embedding;
+    const result = await this.embedWithDelegate(text);
+    const embedding = result.embedding;
+    if (!isValidEmbedding(embedding)) return result;
 
     const payload: CachedQueryEmbedding = {
       model: TUTURUUU_EMBEDDING_MODEL,
@@ -72,7 +93,18 @@ export class RedisCachedQueryEmbeddingProvider implements QueryEmbedder {
       // Redis is an optimization; the delegate keeps its process-local LRU fallback.
     }
 
-    return embedding;
+    return result;
+  }
+
+  private async embedWithDelegate(text: string): Promise<QueryEmbeddingResult> {
+    if (this.delegate.embedQueryWithMetadata) {
+      return this.delegate.embedQueryWithMetadata(text);
+    }
+    return {
+      embedding: await this.delegate.embedQuery(text),
+      cacheStatus: 'unknown',
+      cacheLayer: 'unknown',
+    };
   }
 
   private isEnabled() {

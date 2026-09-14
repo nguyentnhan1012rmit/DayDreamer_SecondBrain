@@ -1,42 +1,15 @@
-import { generateTuturuuuJsonWithMeta } from "./tuturuuu-json.ts";
-import { getTuturuuuAnswerModel } from "./tuturuuu-models.ts";
-import {
-  retrieveMemoryLexicalOnly,
-  retrieveMemoryWithEmbedding,
-  type MemorySearchHit,
-} from "./retrieval.ts";
 import { createDefaultEmbeddingProvider } from "./embedding.ts";
 import type { MemoryDbClient } from "./types.ts";
-import {
-  buildCitations,
-  classifyRetrievalConfidence,
-} from "./answer-utils.ts";
 import type {
   AnswerMemoryOptions,
   AnswerMemoryResult,
-  AnswerStrategy,
-  ResponseLanguage,
 } from "./answer-memory-types.ts";
 import { detectMemoryIntent } from "./answer-memory-intents.ts";
-import {
-  formatDateForAnswer,
-  trimPromptQuote,
-} from "./answer-memory-format.ts";
-import {
-  buildGroundedSourceContext,
-  GROUNDED_ANSWER_SYSTEM_PROMPT,
-  MEMORY_SOURCE_SECURITY_RULES,
-} from "./answer-memory-prompt.ts";
 import {
   inferRetrievalFilters,
   resolveMemoryTimeZone,
 } from "./answer-memory-temporal.ts";
 import { translateFastAnswerIfUseful } from "./answer-memory-translation.ts";
-import {
-  TuturuuuGroundedAnswerResponseSchema,
-  GroundedAnswerSchema,
-  type GroundedAnswer,
-} from "./answer-memory-schema.ts";
 import {
   DEFAULT_MAX_DISTANCE,
   DEFAULT_RETRIEVAL_CANDIDATE_LIMIT,
@@ -49,8 +22,7 @@ import {
   noMemoryResult,
 } from "./answer-memory-result.ts";
 import {
-  getMemoryIndexDiagnostics,
-  shouldAttachMemoryIndexDiagnostics,
+  maybeGetMemoryIndexDiagnostics,
 } from "./answer-memory-diagnostics.ts";
 import {
   answerFastExtractiveFromChunks,
@@ -58,41 +30,19 @@ import {
   answerTemporalRangeFastPath,
 } from "./answer-memory-fast-path.ts";
 import {
-  buildExpandedTemporalFilters,
-  buildIntentInstruction,
+  describeSelectedPath,
+  didTranslationRun,
   isBroadTemporalSynthesisQuestion,
-  selectMaxAnswerTokens,
-  selectPromptSourceLimit,
-  shouldExpandTemporalEvidenceSearch,
   shouldUseAutoFastPath,
-  shouldUseIntentEvidenceFastPath,
 } from "./answer-memory-routing.ts";
 import {
-  answerIntentEvidenceFastPath,
-  buildUnsupportedIntentNoMemoryResult,
-} from "./answer-memory-evidence.ts";
-import {
-  buildExtractiveFallbackAnswer,
-  buildInsufficientModelAnswer,
-  buildValidationFallbackAnswer,
-  canUseExtractiveFallback,
-  recoverCitationsForAnswer,
-} from "./answer-memory-fallback.ts";
+  retrieveEmbeddedEvidenceMeasured,
+  retrieveLexicalFallbackEvidenceMeasured,
+  retrieveUnindexedEvidence,
+} from "./answer-memory-retrieval-pipeline.ts";
 import { rerankMemoryHits } from "./answer-memory-rerank.ts";
-import {
-  answerPassesEvidenceChecks,
-  hasAdequateSemanticSupport,
-  isAnswerGroundedByCitations,
-  isClaimSupportedByQuote,
-  isIncompleteGeneratedAnswer,
-  isInsufficientAnswer,
-  reconcileConfidence,
-} from "./answer-memory-validation.ts";
-import {
-  findDiariesCreatedInRangeWithDifferentEntryDate,
-  retrieveUnindexedDiaryFallbackHits,
-  type CreatedDiaryDateMismatch,
-} from "./answer-memory-unindexed.ts";
+import { answerFromChunks } from "./answer-memory-generation.ts";
+import { maybeBuildCreatedDateMismatchResult } from "./answer-memory-date-mismatch.ts";
 
 type RoutingTrace = NonNullable<NonNullable<AnswerMemoryResult["debugTrace"]>["routingTrace"]>;
 
@@ -107,6 +57,7 @@ export type {
 export { inferRetrievalFilters, resolveMemoryTimeZone } from "./answer-memory-temporal.ts";
 export { answerSingleDayFastPath, answerTemporalRangeFastPath } from "./answer-memory-fast-path.ts";
 export { rerankMemoryHits } from "./answer-memory-rerank.ts";
+export { answerFromChunks } from "./answer-memory-generation.ts";
 
 export async function answerMemory(
   question: string,
@@ -149,7 +100,7 @@ export async function answerMemory(
   };
 
   const preRetrieveStart = performance.now();
-  const unindexedDiaryChunks = await retrieveUnindexedDiaryFallbackHits(
+  const unindexedDiaryChunks = await retrieveUnindexedEvidence(
     dbClient,
     userId,
     appliedFilters,
@@ -199,7 +150,18 @@ export async function answerMemory(
     if (unindexedFastPathResult.analytics) {
       translatedUnindexedFastPathResult.analytics!.timing.embedMs = 0;
       translatedUnindexedFastPathResult.analytics!.timing.retrieveMs = Math.round(preRetrieveMs);
+      translatedUnindexedFastPathResult.analytics!.timing.preRetrieveMs = Math.round(preRetrieveMs);
+      translatedUnindexedFastPathResult.analytics!.timing.rerankMs = 0;
+      translatedUnindexedFastPathResult.analytics!.timing.firstResultMs = Math.round(
+        preRetrieveStart + preRetrieveMs - totalStart,
+      );
       translatedUnindexedFastPathResult.analytics!.timing.totalMs = Math.round(performance.now() - totalStart);
+      translatedUnindexedFastPathResult.analytics!.timing.fullAnswerMs =
+        translatedUnindexedFastPathResult.analytics!.timing.totalMs;
+      translatedUnindexedFastPathResult.analytics!.embeddingCache = {
+        status: "skipped",
+        layer: "none",
+      };
       translatedUnindexedFastPathResult.analytics!.tokenUsage.model =
         translatedUnindexedFastPathResult.analytics!.tokenUsage.model === "temporal-fast-path"
           ? "unindexed-diary-temporal-fast-path"
@@ -226,32 +188,107 @@ export async function answerMemory(
     return translatedUnindexedFastPathResult;
   }
 
+  let preSqlRetrieveMs = 0;
+  let preSqlRerankMs = 0;
+  if (canUseFastPath && shouldTrySqlFastPath(appliedFilters)) {
+    const lexical = await retrieveLexicalFallbackEvidenceMeasured({
+      question: normalizedQuestion,
+      userId,
+      dbClient,
+      filters: appliedFilters,
+      unindexedChunks: unindexedDiaryChunks,
+    });
+    preSqlRetrieveMs = lexical.retrieveMs;
+    preSqlRerankMs = lexical.rerankMs;
+    const firstResultMs = performance.now() - totalStart;
+    const sqlFastPathResult = answerSingleDayFastPath(
+      normalizedQuestion,
+      lexical.chunks,
+      appliedFilters,
+      lang,
+      options.minTopSimilarity ?? MIN_TOP_SIMILARITY,
+      timeZone,
+    ) ?? answerTemporalRangeFastPath(
+      normalizedQuestion,
+      lexical.chunks,
+      appliedFilters,
+      lang,
+      options.minTopSimilarity ?? MIN_TOP_SIMILARITY,
+      timeZone,
+    );
+
+    if (sqlFastPathResult) {
+      const result = await translateFastAnswerIfUseful(sqlFastPathResult, {
+        question: normalizedQuestion,
+        responseLanguage: lang,
+        generateTranslation: options.generateTranslation,
+      });
+      applyPipelineTiming(result, {
+        preRetrieveMs,
+        embedMs: 0,
+        retrieveMs: lexical.retrieveMs,
+        rerankMs: lexical.rerankMs,
+        firstResultMs,
+        totalMs: performance.now() - totalStart,
+        embeddingCache: { status: "skipped", layer: "none" },
+      });
+      result.debugTrace = buildDebugTrace({
+        question: normalizedQuestion,
+        inferredFilters,
+        appliedFilters,
+        chunks: lexical.chunks,
+        result,
+        routingTrace: {
+          ...baseRoutingTrace,
+          selectedPath: "indexed_fast_path",
+          reason: "An exact date/range filter was answered through SQL lexical/temporal retrieval before embedding.",
+          usedUnindexedDiary: unindexedDiaryChunks.length > 0,
+          translationRan: didTranslationRun(sqlFastPathResult, result),
+        },
+      });
+      return result;
+    }
+  }
+
   const embedStart = performance.now();
   let embedding: number[];
+  let embeddingCache: NonNullable<
+    NonNullable<AnswerMemoryResult["analytics"]>["embeddingCache"]
+  > = { status: "unknown", layer: "unknown" };
   try {
-    embedding = await (options.embeddingProvider ?? createDefaultEmbeddingProvider())
-      .embedQuery(normalizedQuestion);
+    const embedded = await embedQueryWithMetadata(
+      options.embeddingProvider ?? createDefaultEmbeddingProvider(),
+      normalizedQuestion,
+    );
+    embedding = embedded.embedding;
+    embeddingCache = {
+      status: embedded.cacheStatus,
+      layer: embedded.cacheLayer,
+    };
   } catch (error) {
     const embedMs = performance.now() - embedStart;
+    embeddingCache = { status: "cold", layer: "remote" };
     const modelError = classifyModelError(error);
-    const lexicalRetrieveStart = performance.now();
-    let lexicalChunks: MemorySearchHit[] = [];
+    let fallbackChunks = [...unindexedDiaryChunks];
+    let lexicalRetrieveMs = 0;
+    let rerankMs = 0;
     try {
-      lexicalChunks = await retrieveMemoryLexicalOnly(
-        normalizedQuestion,
+      const lexical = await retrieveLexicalFallbackEvidenceMeasured({
+        question: normalizedQuestion,
         userId,
         dbClient,
-        appliedFilters,
-      );
+        filters: appliedFilters,
+        unindexedChunks: unindexedDiaryChunks,
+      });
+      fallbackChunks = lexical.chunks;
+      lexicalRetrieveMs = lexical.retrieveMs;
+      rerankMs = lexical.rerankMs;
     } catch (lexicalError) {
       console.warn("[AnswerMemory] Lexical fallback retrieval failed:", lexicalError);
     }
-    const retrieveMs = preRetrieveMs + (performance.now() - lexicalRetrieveStart);
-    const fallbackChunks = rerankMemoryHits(
-      normalizedQuestion,
-      dedupeMemoryHits([...unindexedDiaryChunks, ...lexicalChunks]),
-      appliedFilters,
-    );
+    const retrieveMs = preRetrieveMs + preSqlRetrieveMs + lexicalRetrieveMs;
+    rerankMs += preSqlRerankMs;
+    const firstResultMs = performance.now() - totalStart;
     const unavailableMessage = modelError.kind === "quota"
       ? lang === "vi"
         ? "Tuturuuu AI đang bị giới hạn quota/rate limit nên mình chưa thể tìm kiếm AI lúc này."
@@ -282,7 +319,12 @@ export async function answerMemory(
     });
     result.analytics.timing.embedMs = Math.round(embedMs);
     result.analytics.timing.retrieveMs = Math.round(retrieveMs);
+    result.analytics.timing.preRetrieveMs = Math.round(preRetrieveMs);
+    result.analytics.timing.rerankMs = Math.round(rerankMs);
+    result.analytics.timing.firstResultMs = Math.round(firstResultMs);
     result.analytics.timing.totalMs = Math.round(performance.now() - totalStart);
+    result.analytics.timing.fullAnswerMs = result.analytics.timing.totalMs;
+    result.analytics.embeddingCache = embeddingCache;
     if (!fallbackChunks.length) {
       result.analytics.status = "error";
     }
@@ -315,56 +357,19 @@ export async function answerMemory(
   }
   const embedMs = performance.now() - embedStart;
 
-  const retrieveStart = performance.now();
-  let retrievedChunks = rerankMemoryHits(
-    normalizedQuestion,
-    await retrieveMemoryWithEmbedding(
-      normalizedQuestion,
-      userId,
-      dbClient,
-      embedding,
-      appliedFilters,
-    ),
-    appliedFilters,
-  );
-  let chunks = rerankMemoryHits(
-    normalizedQuestion,
-    [...unindexedDiaryChunks, ...retrievedChunks],
-    appliedFilters,
-  );
-
-  if (
-    shouldExpandTemporalEvidenceSearch(
-      normalizedQuestion,
-      intent,
-      chunks,
-      appliedFilters,
-    )
-  ) {
-    const expandedFilters = buildExpandedTemporalFilters(appliedFilters);
-    const expandedRetrievedChunks = rerankMemoryHits(
-      normalizedQuestion,
-      await retrieveMemoryWithEmbedding(
-        normalizedQuestion,
-        userId,
-        dbClient,
-        embedding,
-        expandedFilters,
-      ),
-      expandedFilters,
-    );
-
-    retrievedChunks = dedupeMemoryHits([
-      ...retrievedChunks,
-      ...expandedRetrievedChunks,
-    ]);
-    chunks = rerankMemoryHits(
-      normalizedQuestion,
-      dedupeMemoryHits([...unindexedDiaryChunks, ...retrievedChunks]),
-      appliedFilters,
-    );
-  }
-  const retrieveMs = performance.now() - retrieveStart;
+  const retrieved = await retrieveEmbeddedEvidenceMeasured({
+    question: normalizedQuestion,
+    userId,
+    dbClient,
+    embedding,
+    filters: appliedFilters,
+    intent,
+    unindexedChunks: unindexedDiaryChunks,
+  });
+  const chunks = retrieved.chunks;
+  const retrieveMs = preRetrieveMs + preSqlRetrieveMs + retrieved.retrieveMs;
+  const rerankMs = preSqlRerankMs + retrieved.rerankMs;
+  const firstResultMs = performance.now() - totalStart;
 
   if (!chunks.length) {
     const createdDateMismatchResult = await maybeBuildCreatedDateMismatchResult(
@@ -381,6 +386,15 @@ export async function answerMemory(
     );
 
     if (createdDateMismatchResult) {
+      applyPipelineTiming(createdDateMismatchResult, {
+        preRetrieveMs,
+        embedMs,
+        retrieveMs,
+        rerankMs,
+        firstResultMs,
+        totalMs: performance.now() - totalStart,
+        embeddingCache,
+      });
       createdDateMismatchResult.debugTrace = buildDebugTrace({
         question: normalizedQuestion,
         inferredFilters,
@@ -454,6 +468,11 @@ export async function answerMemory(
     selectedPath = "indexed_fast_path";
   }
 
+  if (result.answerMode === "no_memory") {
+    result.answer = temporalNoMemoryMessage(appliedFilters, lang, timeZone) ??
+      result.answer;
+  }
+
   const beforeTranslation = result;
   result = await translateFastAnswerIfUseful(result, {
     question: normalizedQuestion,
@@ -464,7 +483,12 @@ export async function answerMemory(
   if (result.analytics) {
     result.analytics.timing.embedMs = Math.round(embedMs);
     result.analytics.timing.retrieveMs = Math.round(retrieveMs);
+    result.analytics.timing.preRetrieveMs = Math.round(preRetrieveMs);
+    result.analytics.timing.rerankMs = Math.round(rerankMs);
+    result.analytics.timing.firstResultMs = Math.round(firstResultMs);
     result.analytics.timing.totalMs = Math.round(performance.now() - totalStart);
+    result.analytics.timing.fullAnswerMs = result.analytics.timing.totalMs;
+    result.analytics.embeddingCache = embeddingCache;
   }
 
   result.debugTrace = buildDebugTrace({
@@ -476,7 +500,9 @@ export async function answerMemory(
     routingTrace: {
       ...baseRoutingTrace,
       selectedPath,
-      reason: describeSelectedPath(selectedPath, canUseFastPath, answerStrategy),
+      reason: retrieved.usedLatestFallback
+        ? `${describeSelectedPath(selectedPath, canUseFastPath, answerStrategy)} The recent window was empty, so retrieval used the latest available memories.`
+        : describeSelectedPath(selectedPath, canUseFastPath, answerStrategy),
       usedUnindexedDiary: unindexedDiaryChunks.length > 0,
       translationRan: didTranslationRun(beforeTranslation, result),
     },
@@ -492,565 +518,91 @@ export async function answerMemory(
   return result;
 }
 
-export async function answerFromChunks(
-  question: string,
-  chunks: MemorySearchHit[],
-  options: {
-    minTopSimilarity?: number;
-    responseLanguage?: ResponseLanguage;
-    answerStrategy?: AnswerStrategy;
-    timeZone?: string;
-    generateAnswer?: typeof generateTuturuuuJsonWithMeta<GroundedAnswer>;
-  } = {},
-): Promise<AnswerMemoryResult> {
-  const minTopSimilarity = options.minTopSimilarity ?? MIN_TOP_SIMILARITY;
-  const lang = options.responseLanguage ?? "en";
-  const answerStrategy = options.answerStrategy ?? "auto";
-  const timeZone = resolveMemoryTimeZone(options.timeZone);
-  const intent = detectMemoryIntent(question);
-
-  if (!chunks.length) {
-    const result = noMemoryResult(
-      lang === "vi"
-        ? "Mình chưa tìm thấy ký ức đủ liên quan để trả lời chắc chắn."
-        : "I couldn't find any relevant memories to answer your question.",
-      lang,
-    );
-    result.analytics = buildQueryAnalytics({
-      model: "n/a",
-      chunksRetrieved: 0,
-      status: "no_memory",
-      answerMode: "no_memory",
-    });
-    return result;
-  }
-
-  const sortedChunks = [...chunks].sort((a, b) => b.similarity - a.similarity);
-  const topSimilarity = sortedChunks[0]?.similarity ?? 0;
-
-  if (topSimilarity < minTopSimilarity || !hasAdequateSemanticSupport(sortedChunks)) {
-    const result = noMemoryResult(
-      lang === "vi"
-        ? "Mình tìm thấy một vài ký ức gần nghĩa, nhưng độ liên quan chưa đủ cao để trả lời chắc chắn."
-        : "I found some loosely related memories, but the relevance isn't strong enough for a confident answer.",
-      lang,
-    );
-    result.analytics = buildQueryAnalytics({
-      model: "n/a",
-      chunksRetrieved: chunks.length,
-      status: "no_memory",
-      answerMode: "no_memory",
-    });
-    return result;
-  }
-
-  const sources = buildCitations(sortedChunks);
-  const shouldTryIntentFastPath = shouldUseIntentEvidenceFastPath(
-    question,
-    intent,
-    answerStrategy,
-  );
-  if (shouldTryIntentFastPath) {
-    const intentEvidenceAnswer = answerIntentEvidenceFastPath(
-      question,
-      sources,
-      chunks.length,
-      lang,
-      intent,
-      timeZone,
-    );
-    if (intentEvidenceAnswer) return intentEvidenceAnswer;
-
-    const unsupportedIntentAnswer = buildUnsupportedIntentNoMemoryResult(
-      question,
-      sources,
-      chunks.length,
-      lang,
-      intent,
-    );
-    if (unsupportedIntentAnswer) return unsupportedIntentAnswer;
-  }
-
-  if (
-    answerStrategy === "fast" ||
-    (answerStrategy === "auto" && shouldUseAutoFastPath(question, intent))
-  ) {
-    return answerFastExtractiveFromChunks(question, chunks, lang, minTopSimilarity, timeZone);
-  }
-
-  const promptSourceLimit = selectPromptSourceLimit(question, intent);
-  const promptSources = sources.slice(0, promptSourceLimit);
-  const sourceContext = buildGroundedSourceContext(promptSources);
-
-  const broadSynthesisQuestion = isBroadTemporalSynthesisQuestion(question, intent);
-  const languageInstruction = lang === "vi"
-    ? '- PHẢI trả lời bằng tiếng Việt tự nhiên. Dùng "mình" cho assistant và "bạn" cho user.'
-    : "- You MUST answer in natural English.";
-  const intentInstruction = buildIntentInstruction(intent, lang);
-  const synthesisInstruction = broadSynthesisQuestion
-    ? lang === "vi"
-      ? [
-          '- Vì đây là câu hỏi tóm tắt theo tuần/tháng/khoảng thời gian, hãy tổng hợp theo các mục ngắn: "Công việc chính", "Blockers/rủi ro", "Quyết định quan trọng", "Next steps".',
-          "- Chỉ hiện mục nào có bằng chứng trong sources; không cần đủ cả 4 mục nếu nguồn không có.",
-          "- Không copy nguyên raw chunks dài. Hãy gom ý trùng nhau và diễn đạt tự nhiên bằng tiếng Việt.",
-        ].join("\n")
-      : [
-          '- Because this is a weekly/monthly/range summary question, synthesize with short sections: "Main work", "Blockers/risks", "Key decisions", "Next steps".',
-          "- Only include sections supported by the retrieved sources; do not force all four sections.",
-          "- Do not copy long raw chunks. Merge duplicate ideas and write naturally in English.",
-        ].join("\n")
-    : "- Do not copy long raw chunks. Summarize the relevant facts naturally.";
-  const lengthInstruction = broadSynthesisQuestion
-    ? "- Keep the answer compact: up to 180 words or 8 short bullets."
-    : "- Keep answer concise: at most 120 words or 5 short bullets.";
-
-  const prompt = `
-You are the grounded answer generator for a personal Second Brain memory system.
-
-Question:
-${question}
-
-Retrieved memory sources:
-${sourceContext}
-
-Rules:
-${MEMORY_SOURCE_SECURITY_RULES}
-- Answer ONLY using the retrieved memory sources.
-- Do not invent dates, people, events, decisions, emotions, or outcomes.
-- Answer naturally without adding any citation markers (like [S1]) in your text.
-- However, you MUST still provide the citations in the JSON output with their respective claims.
-- Each citations.claim MUST be a short exact quote or near-exact phrase copied from the source memory. Do not translate citation claims.
-- If the sources do not answer the question, say that the memory is insufficient and set confidence to "low".
-- Prefer a warm, concise answer over a fluent but unsupported answer.
-${lengthInstruction}
-- Include at most 4 citation objects unless more are absolutely necessary.
-- For "what did I do" timeline/range questions, summarize the main activities first, then use short bullets only when helpful.
-- Do not mention Tuturuuu, model errors, retrieval, debug trace, or implementation details.
-- Return a compact JSON object with exactly these top-level fields: answer, confidence, citations.
-- Return ONLY JSON. Do not wrap it in markdown.
-- Required JSON shape:
-  {"answer":"...","confidence":"high|medium|low","citations":[{"marker":"S1","claim":"..."}]}
-- Use citation markers exactly as S1, S2, S3, etc. Do not include square brackets in marker values.
-- It is okay to answer in Vietnamese while citation claims remain in the source language.
-${synthesisInstruction}
-- ${intentInstruction}
-${languageInstruction}
-`.trim();
-
-  try {
-    const generateStart = performance.now();
-    const tuturuuuResult = await (options.generateAnswer ?? generateTuturuuuJsonWithMeta)({
-      model: getTuturuuuAnswerModel(),
-      prompt,
-      systemPrompt: GROUNDED_ANSWER_SYSTEM_PROMPT,
-      responseSchema: TuturuuuGroundedAnswerResponseSchema,
-      validator: GroundedAnswerSchema,
-      temperature: 0.1,
-      maxOutputTokens: selectMaxAnswerTokens(question),
-    });
-    const generateMs = performance.now() - generateStart;
-
-    const output = tuturuuuResult.data;
-    const tokenUsage = tuturuuuResult.tokenUsage;
-
-    if (isIncompleteGeneratedAnswer(output.answer)) {
-      return buildValidationFallbackAnswer(
-        lang,
-        promptSources,
-        chunks.length,
-        "Generated answer appeared incomplete.",
-        {
-          generateMs: Math.round(generateMs),
-          tokenUsage,
-        },
-        question,
-        timeZone,
-      );
-    }
-
-    const allowedMarkers = new Set(promptSources.map((source) => source.marker));
-    const validModelCitations = output.citations.filter((citation) =>
-      allowedMarkers.has(citation.marker),
-    );
-    const sourceByMarker = new Map(
-      promptSources.map((source) => [source.marker, source]),
-    );
-    const supportedModelCitations = validModelCitations.filter((citation) => {
-      const source = sourceByMarker.get(citation.marker);
-      return source ? isClaimSupportedByQuote(citation.claim, source.quote) : false;
-    });
-
-    if (!supportedModelCitations.length && isInsufficientAnswer(output.answer)) {
-      return buildInsufficientModelAnswer(lang, output.answer, chunks.length, {
-        generateMs: Math.round(generateMs),
-        tokenUsage,
-      });
-    }
-
-    if (!supportedModelCitations.length) {
-      const recoveredCitations = recoverCitationsForAnswer(
-        output.answer,
-        promptSources,
-        question,
-        intent,
-      );
-
-      if (
-        recoveredCitations.length &&
-        answerPassesEvidenceChecks(output.answer, recoveredCitations)
-      ) {
-        const recoveredRetrievalConfidence = classifyRetrievalConfidence(
-          recoveredCitations[0]?.similarity ?? topSimilarity,
-          recoveredCitations.length,
-        );
-
-        return {
-          answer: output.answer,
-          confidence: reconcileConfidence(
-            output.confidence,
-            recoveredRetrievalConfidence,
-            output.answer,
-            false,
-          ),
-          citations: recoveredCitations,
-          answerMode: "tuturuuu",
-          analytics: buildQueryAnalytics({
-            model: tokenUsage.model,
-            tokenUsage,
-            timing: { generateMs: Math.round(generateMs) },
-            chunksRetrieved: chunks.length,
-            status: "success",
-            answerMode: "tuturuuu",
-          }),
-        };
-      }
-
-      return buildValidationFallbackAnswer(
-        lang,
-        promptSources,
-        chunks.length,
-        "Generated answer did not include usable grounded citations.",
-        {
-          generateMs: Math.round(generateMs),
-          tokenUsage,
-        },
-        question,
-        timeZone,
-      );
-    }
-
-    const citedMarkerToClaim = new Map(
-      supportedModelCitations.map((citation) => [citation.marker, citation.claim]),
-    );
-
-    const citations = promptSources
-      .filter((source) => citedMarkerToClaim.has(source.marker))
-      .map((source) => ({
-        ...source,
-        claim: citedMarkerToClaim.get(source.marker),
-      }));
-    const augmentedCitations = mergeRecoveredCitations(
-      citations,
-      recoverCitationsForAnswer(output.answer, promptSources, question, intent),
-    );
-    const answerGrounded = isAnswerGroundedByCitations(
-      output.answer,
-      augmentedCitations.map((citation) => ({
-        marker: citation.marker,
-        claim: citation.claim ?? citation.quote,
-      })),
-      sourceByMarker,
-      lang,
-    );
-
-    const retrievalConfidence = classifyRetrievalConfidence(
-      topSimilarity,
-      augmentedCitations.length,
-    );
-    if (!answerGrounded) {
-      return buildValidationFallbackAnswer(
-        lang,
-        promptSources,
-        chunks.length,
-        "Generated answer was not sufficiently grounded in its citations.",
-        {
-          generateMs: Math.round(generateMs),
-          tokenUsage,
-        },
-        question,
-        timeZone,
-      );
-    }
-
-    if (!answerPassesEvidenceChecks(output.answer, augmentedCitations)) {
-      return buildValidationFallbackAnswer(
-        lang,
-        promptSources,
-        chunks.length,
-        "Generated answer mentioned dates or named entities that were not supported by evidence.",
-        {
-          generateMs: Math.round(generateMs),
-          tokenUsage,
-        },
-        question,
-        timeZone,
-      );
-    }
-
-    const finalConfidence = reconcileConfidence(
-      output.confidence,
-      retrievalConfidence,
-      output.answer,
-      supportedModelCitations.length < validModelCitations.length,
-    );
-
-    return {
-      answer: output.answer,
-      confidence: finalConfidence,
-      citations: augmentedCitations,
-      answerMode: "tuturuuu",
-      analytics: buildQueryAnalytics({
-        model: tokenUsage.model,
-        tokenUsage,
-        timing: { generateMs: Math.round(generateMs) },
-        chunksRetrieved: chunks.length,
-        status: "success",
-        answerMode: "tuturuuu",
-      }),
-    };
-  } catch (error) {
-    const modelError = classifyModelError(error);
-    console.warn(
-      `[AnswerMemory] Failed to generate grounded answer (${modelError.kind}${modelError.status ? ` ${modelError.status}` : ""}): ${modelError.message}`,
-    );
-
-    if (canUseExtractiveFallback(modelError, promptSources)) {
-      return buildExtractiveFallbackAnswer(lang, promptSources, chunks.length, modelError, {}, question, timeZone);
-    }
-
-    return {
-      answer:
-        lang === "vi"
-          ? "Mình đã tìm thấy ký ức liên quan, nhưng không thể tạo câu trả lời có cấu trúc đáng tin cậy ở lần này."
-          : "I found relevant memories, but was unable to generate a structured answer this time.",
-      confidence: "low",
-      citations: [],
-      answerMode: "extractive_fallback",
-      modelError,
-      analytics: buildQueryAnalytics({
-        model: "n/a",
-        chunksRetrieved: chunks.length,
-        status: "error",
-        answerMode: "extractive_fallback",
-      }),
-    };
-  }
-}
-
-function dedupeMemoryHits(chunks: MemorySearchHit[]): MemorySearchHit[] {
-  const seen = new Set<string>();
-  const deduped: MemorySearchHit[] = [];
-
-  for (const chunk of chunks) {
-    if (seen.has(chunk.id)) continue;
-    seen.add(chunk.id);
-    deduped.push(chunk);
-  }
-
-  return deduped;
-}
-
-async function maybeBuildCreatedDateMismatchResult(
-  dbClient: MemoryDbClient,
-  userId: string,
-  filters: AnswerMemoryOptions["filters"],
-  lang: ResponseLanguage,
+function temporalNoMemoryMessage(
+  filters: {
+    startDate?: Date;
+    endDate?: Date;
+    fallbackToLatest?: boolean;
+  },
+  lang: "en" | "vi",
   timeZone: string,
-  timing: {
+) {
+  if (
+    !filters.startDate ||
+    !filters.endDate ||
+    filters.fallbackToLatest === true
+  ) {
+    return null;
+  }
+
+  const formatter = new Intl.DateTimeFormat(lang === "vi" ? "vi-VN" : "en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone,
+  });
+  const start = formatter.format(filters.startDate);
+  const end = formatter.format(filters.endDate);
+
+  if (start === end) {
+    return lang === "vi"
+      ? `Không có memory nào được ghi nhận trong ngày ${start}.`
+      : `No memories were recorded on ${start}.`;
+  }
+
+  return lang === "vi"
+    ? `Không có memory nào được ghi nhận trong khoảng ${start}–${end}.`
+    : `No memories were recorded between ${start} and ${end}.`;
+}
+
+function shouldTrySqlFastPath(filters: {
+  startDate?: Date;
+  endDate?: Date;
+  sourceId?: string;
+  sourceIds?: string[];
+}) {
+  return Boolean(
+    (filters.startDate && filters.endDate) ||
+      filters.sourceId ||
+      filters.sourceIds?.length,
+  );
+}
+
+async function embedQueryWithMetadata(
+  provider: NonNullable<AnswerMemoryOptions["embeddingProvider"]>,
+  question: string,
+) {
+  if (provider.embedQueryWithMetadata) {
+    return provider.embedQueryWithMetadata(question);
+  }
+  return {
+    embedding: await provider.embedQuery(question),
+    cacheStatus: "unknown" as const,
+    cacheLayer: "unknown" as const,
+  };
+}
+
+function applyPipelineTiming(
+  result: AnswerMemoryResult,
+  input: {
+    preRetrieveMs: number;
     embedMs: number;
     retrieveMs: number;
+    rerankMs: number;
+    firstResultMs: number;
     totalMs: number;
+    embeddingCache: NonNullable<
+      NonNullable<AnswerMemoryResult["analytics"]>["embeddingCache"]
+    >;
   },
-): Promise<AnswerMemoryResult | null> {
-  if (!filters?.startDate || !filters.endDate) return null;
-
-  const rows = await findDiariesCreatedInRangeWithDifferentEntryDate(
-    dbClient,
-    userId,
-    filters,
-  );
-  if (!rows.length) return null;
-
-  const labels = rows
-    .map((row) => formatDateForAnswer(row.entryDate, lang, timeZone))
-    .filter(Boolean);
-  const uniqueLabels = [...new Set(labels)];
-  const primaryLabel = uniqueLabels[0];
-  const createdLabel = formatDateForAnswer(rows[0]!.createdAt, lang, timeZone);
-  const message = buildCreatedDateMismatchMessage(
-    rows,
-    primaryLabel,
-    createdLabel,
-    lang,
-    timeZone,
-  );
-  const result = noMemoryResult(message, lang);
-
-  result.suggestions = primaryLabel
-    ? lang === "vi"
-      ? [
-          `Hỏi: ngày ${primaryLabel} tôi làm gì?`,
-          "Kiểm tra Memory date trên diary card",
-          "Sửa entry date nếu diary đang sai ngày",
-        ]
-      : [
-          `Ask: what did I do on ${primaryLabel}?`,
-          "Check the Memory date on the diary card",
-          "Edit the entry date if the diary is dated incorrectly",
-        ]
-    : result.suggestions;
-  result.analytics = buildQueryAnalytics({
-    model: "n/a",
-    chunksRetrieved: 0,
-    status: "no_memory",
-    answerMode: "no_memory",
-    timing: {
-      embedMs: Math.round(timing.embedMs),
-      retrieveMs: Math.round(timing.retrieveMs),
-      generateMs: 0,
-      totalMs: Math.round(timing.totalMs),
-    },
-  });
-
-  return result;
-}
-
-function buildCreatedDateMismatchMessage(
-  rows: CreatedDiaryDateMismatch[],
-  primaryLabel: string | undefined,
-  createdLabel: string,
-  lang: ResponseLanguage,
-  timeZone: string,
-): string {
-  const titles = rows
-    .map((row) => extractDiaryTitle(row.rawText))
-    .filter(Boolean)
-    .slice(0, 2);
-  const titleSuffix = titles.length ? ` (${titles.join(", ")})` : "";
-  const dateList = rows
-    .map((row) => formatDateForAnswer(row.entryDate, lang, timeZone))
-    .filter(Boolean);
-  const uniqueDateList = [...new Set(dateList)].join(", ");
-
-  if (lang === "vi") {
-    return [
-      `Mình không tìm thấy ký ức có memory date là ${createdLabel}.`,
-      `Có diary được tạo ngày đó${titleSuffix}, nhưng diary này đang được lưu với memory date ${uniqueDateList || primaryLabel}.`,
-      primaryLabel
-        ? `Hãy hỏi "ngày ${primaryLabel} tôi làm gì?" hoặc sửa entry date nếu bạn muốn nó thuộc ngày ${createdLabel}.`
-        : "Hãy kiểm tra lại entry date của diary này.",
-    ].join(" ");
-  }
-
-  return [
-    `I couldn't find memories whose memory date is ${createdLabel}.`,
-    `I did find diary entries created on that date${titleSuffix}, but they are stored with memory date ${uniqueDateList || primaryLabel}.`,
-    primaryLabel
-      ? `Try asking "what did I do on ${primaryLabel}?" or edit the entry date if it should belong to ${createdLabel}.`
-      : "Check the diary entry date for that entry.",
-  ].join(" ");
-}
-
-function extractDiaryTitle(rawText: string): string {
-  return trimPromptQuote(rawText.split(/\r?\n/, 1)[0]?.trim() ?? "", 80);
-}
-
-function mergeRecoveredCitations<T extends { chunkId: string; similarity: number }>(
-  citations: T[],
-  recoveredCitations: T[],
-): T[] {
-  if (!recoveredCitations.length) return citations;
-
-  const byChunkId = new Map<string, T>();
-  for (const citation of citations) {
-    byChunkId.set(citation.chunkId, citation);
-  }
-
-  for (const citation of recoveredCitations) {
-    if (byChunkId.has(citation.chunkId)) continue;
-    byChunkId.set(citation.chunkId, citation);
-  }
-
-  return [...byChunkId.values()]
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, 4);
-}
-
-function didTranslationRun(
-  before: AnswerMemoryResult,
-  after: AnswerMemoryResult,
-): boolean {
-  if (before.answerMode !== after.answerMode) return false;
-  return (
-    before.answer !== after.answer ||
-    (after.analytics?.tokenUsage.totalTokens ?? 0) > (before.analytics?.tokenUsage.totalTokens ?? 0)
-  );
-}
-
-function describeSelectedPath(
-  selectedPath: RoutingTrace["selectedPath"],
-  canUseFastPath: boolean,
-  answerStrategy: AnswerStrategy,
-): string {
-  switch (selectedPath) {
-    case "indexed_fast_path":
-      return canUseFastPath
-        ? "The requested strategy allowed Fast path, so the answer was assembled from retrieved evidence without full generation."
-        : "The result used an indexed Fast path.";
-    case "deep_generation":
-      return answerStrategy === "deep"
-        ? "Deep was requested explicitly, so the answer used grounded model generation."
-        : "Auto routing required synthesis/reasoning, so the answer used grounded model generation.";
-    case "deep_validation_fallback":
-      return "Grounded model generation ran, but validation rejected unsupported or incomplete output, so evidence fallback replaced the answer.";
-    case "deep_model_error_fallback":
-      return "Grounded model generation failed, so evidence fallback replaced the answer.";
-    case "no_memory":
-      return "Retrieval did not provide enough supported evidence to answer.";
-    case "unindexed_fast_path":
-      return "A direct date/range question matched unindexed diary evidence.";
-    case "embedding_error_fallback":
-      return "Embedding failed, so indexed retrieval used lexical/date fallback and skipped full generation.";
-    case "created_date_mismatch":
-      return "The requested created date did not match stored memory dates.";
-    default:
-      return "Answer routing completed.";
-  }
-}
-
-async function maybeGetMemoryIndexDiagnostics(
-  dbClient: MemoryDbClient,
-  userId: string,
-  filters: AnswerMemoryOptions["filters"],
-  result: AnswerMemoryResult,
-  chunksRetrieved: number,
 ) {
-  if (!filters) return undefined;
-  if (
-    !shouldAttachMemoryIndexDiagnostics({
-      chunksRetrieved,
-      status: result.analytics?.status,
-      noMemory: result.noMemory,
-      hasModelError: Boolean(result.modelError),
-    })
-  ) {
-    return undefined;
-  }
-
-  try {
-    return await getMemoryIndexDiagnostics(dbClient, userId, filters);
-  } catch (error) {
-    console.warn("[AnswerMemory] Failed to load memory index diagnostics:", error);
-    return undefined;
-  }
+  if (!result.analytics) return;
+  result.analytics.timing.preRetrieveMs = Math.round(input.preRetrieveMs);
+  result.analytics.timing.embedMs = Math.round(input.embedMs);
+  result.analytics.timing.retrieveMs = Math.round(input.retrieveMs);
+  result.analytics.timing.rerankMs = Math.round(input.rerankMs);
+  result.analytics.timing.firstResultMs = Math.round(input.firstResultMs);
+  result.analytics.timing.totalMs = Math.round(input.totalMs);
+  result.analytics.timing.fullAnswerMs = Math.round(input.totalMs);
+  result.analytics.embeddingCache = input.embeddingCache;
 }

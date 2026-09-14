@@ -1,32 +1,41 @@
 // apps/worker/src/index.ts
-import './env';
-import { prisma } from './lib/prisma';
-import { captureWorkerException } from './instrument';
-import { renderWorkerMetrics, WORKER_METRICS_CONTENT_TYPE } from './metrics';
+import "./env";
+import { prisma } from "./lib/prisma";
+import { captureWorkerException } from "./instrument";
+import { renderWorkerMetrics, WORKER_METRICS_CONTENT_TYPE } from "./metrics";
 
 // 1. Import all background jobs with a single line
 import {
-    SummaryPipelineJob,
-    WeeklySummaryPipelineJob,
-    MonthlySummaryPipelineJob,
-    YearlySummaryPipelineJob,
-    SyncCalendarJob,
-    SemanticLinkingJob,
-    DataIngestionJob
-} from './jobs';
+  SummaryPipelineJob,
+  WeeklySummaryPipelineJob,
+  MonthlySummaryPipelineJob,
+  YearlySummaryPipelineJob,
+  SummaryCatchUpJob,
+  SyncCalendarJob,
+  SemanticLinkingJob,
+  DataIngestionJob,
+  CleanupJob,
+  StorageDeletionJob,
+} from "./jobs";
 
-console.log('===================================================');
-console.log('Starting [The Second Brain] Background Worker...');
-console.log('===================================================');
+console.log("===================================================");
+console.log("Starting [The Second Brain] Background Worker...");
+console.log("===================================================");
 
-const WORKER_HEARTBEAT_ID = process.env.WORKER_HEARTBEAT_ID ?? 'indexing-worker';
-const WORKER_HEARTBEAT_INTERVAL_MS = Number(process.env.WORKER_HEARTBEAT_INTERVAL_MS ?? 15000);
+const WORKER_HEARTBEAT_ID =
+  process.env.WORKER_HEARTBEAT_ID ?? "indexing-worker";
+const WORKER_HEARTBEAT_INTERVAL_MS = Number(
+  process.env.WORKER_HEARTBEAT_INTERVAL_MS ?? 15000,
+);
 let heartbeatTimer: NodeJS.Timeout | null = null;
 
-async function writeWorkerHeartbeat(status: 'running' | 'stopping', detail?: string) {
-    try {
-        await prisma.$executeRawUnsafe(
-            `
+async function writeWorkerHeartbeat(
+  status: "running" | "stopping",
+  detail?: string,
+) {
+  try {
+    await prisma.$executeRawUnsafe(
+      `
             INSERT INTO worker_heartbeats (id, status, detail, started_at, heartbeat_at, updated_at)
             VALUES ($1::text, $2, $3, now(), now(), now())
             ON CONFLICT (id)
@@ -36,84 +45,103 @@ async function writeWorkerHeartbeat(status: 'running' | 'stopping', detail?: str
                 heartbeat_at = now(),
                 updated_at = now()
             `,
-            WORKER_HEARTBEAT_ID,
-            status,
-            detail ?? null,
-        );
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[WorkerHeartbeat] Could not write heartbeat: ${message}`);
-    }
+      WORKER_HEARTBEAT_ID,
+      status,
+      detail ?? null,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[WorkerHeartbeat] Could not write heartbeat: ${message}`);
+  }
 }
 
 function startWorkerHeartbeat() {
-    void writeWorkerHeartbeat('running', 'Worker process started and cron jobs are scheduled.');
-    heartbeatTimer = setInterval(() => {
-        void writeWorkerHeartbeat('running', 'Worker process is alive.');
-    }, Math.max(5000, WORKER_HEARTBEAT_INTERVAL_MS));
-    heartbeatTimer.unref?.();
+  void writeWorkerHeartbeat(
+    "running",
+    "Worker process started and cron jobs are scheduled.",
+  );
+  heartbeatTimer = setInterval(
+    () => {
+      void writeWorkerHeartbeat("running", "Worker process is alive.");
+    },
+    Math.max(5000, WORKER_HEARTBEAT_INTERVAL_MS),
+  );
+  heartbeatTimer.unref?.();
 }
 
 function installShutdownHandler(signal: NodeJS.Signals) {
-    process.on(signal, () => {
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
-        void Promise.allSettled([
-            writeWorkerHeartbeat('stopping', `Worker received ${signal}.`),
-            DataIngestionJob.stopRealtimeListener(),
-        ]).finally(() => {
-            void prisma.$disconnect().finally(() => process.exit(0));
-        });
+  process.on(signal, () => {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    void Promise.allSettled([
+      writeWorkerHeartbeat("stopping", `Worker received ${signal}.`),
+      DataIngestionJob.stopRealtimeListener(),
+    ]).finally(() => {
+      void prisma.$disconnect().finally(() => process.exit(0));
     });
+  });
 }
 
 // 2. Initialize and start all Cron Jobs
 try {
-    startWorkerHeartbeat();
+  startWorkerHeartbeat();
 
-    // Data Retrieval Pipeline
-    SyncCalendarJob.startCron();
+  // Data Retrieval Pipeline
+  SyncCalendarJob.startCron();
 
-    // Data Linking Pipeline
-    SemanticLinkingJob.startCron();
+  // Data Linking Pipeline
+  SemanticLinkingJob.startCron();
 
-    // Universal Data Ingestion
-    DataIngestionJob.startCron();
-    DataIngestionJob.startRealtimeListener();
+  // Universal Data Ingestion
+  DataIngestionJob.startCron();
+  DataIngestionJob.startRealtimeListener();
 
-    // Data Summarization Pipeline
-    SummaryPipelineJob.startCron();
-    WeeklySummaryPipelineJob.startCron();
-    MonthlySummaryPipelineJob.startCron();
-    YearlySummaryPipelineJob.startCron();
+  // Data Summarization Pipeline
+  SummaryPipelineJob.startCron();
+  WeeklySummaryPipelineJob.startCron();
+  MonthlySummaryPipelineJob.startCron();
+  YearlySummaryPipelineJob.startCron();
+  SummaryCatchUpJob.startCron();
 
-    console.log('===================================================');
-    console.log('All background jobs have been scheduled successfully!');
-    console.log('===================================================');
+  // Retention and cache cleanup
+  CleanupJob.startCron();
+  StorageDeletionJob.startCron();
+
+  console.log("===================================================");
+  console.log("All background jobs have been scheduled successfully!");
+  console.log("===================================================");
 } catch (error) {
-    console.error('Critical error while starting the Worker:', error);
-    void captureWorkerException(error).finally(() => process.exit(1));
+  console.error("Critical error while starting the Worker:", error);
+  void captureWorkerException(error).finally(() => process.exit(1));
 }
 
-installShutdownHandler('SIGINT');
-installShutdownHandler('SIGTERM');
+installShutdownHandler("SIGINT");
+installShutdownHandler("SIGTERM");
 
 // 3. Keep the Worker process alive & expose a health endpoint for Render Free Web Service
-import http from 'http';
+import http from "http";
 
 const port = Number(process.env.PORT ?? 3002);
 const server = http.createServer((req, res) => {
-  const pathname = req.url ? new URL(req.url, 'http://worker.local').pathname : '/';
+  const pathname = req.url
+    ? new URL(req.url, "http://worker.local").pathname
+    : "/";
 
-  if (pathname === '/health' || pathname === '/') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', workerId: WORKER_HEARTBEAT_ID, uptime: process.uptime() }));
+  if (pathname === "/health" || pathname === "/") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        workerId: WORKER_HEARTBEAT_ID,
+        uptime: process.uptime(),
+      }),
+    );
     return;
   }
 
-  if (pathname === '/metrics') {
+  if (pathname === "/metrics") {
     res.writeHead(200, {
-      'Content-Type': WORKER_METRICS_CONTENT_TYPE,
-      'Cache-Control': 'no-store',
+      "Content-Type": WORKER_METRICS_CONTENT_TYPE,
+      "Cache-Control": "no-store",
     });
     res.end(renderWorkerMetrics(DataIngestionJob.getMetrics()));
     return;
@@ -123,7 +151,7 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
-server.listen(port, '0.0.0.0', () => {
+server.listen(port, "0.0.0.0", () => {
   console.log(`Worker health HTTP server listening on port ${port}`);
 });
 
@@ -131,5 +159,5 @@ function closeHttpServer() {
   server.close();
 }
 
-process.on('SIGINT', closeHttpServer);
-process.on('SIGTERM', closeHttpServer);
+process.on("SIGINT", closeHttpServer);
+process.on("SIGTERM", closeHttpServer);

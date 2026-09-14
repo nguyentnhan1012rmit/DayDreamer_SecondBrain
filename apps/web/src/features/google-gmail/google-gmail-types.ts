@@ -1,6 +1,6 @@
 export type GmailConnectionStatus = {
-  source?: 'gmail';
-  oauthMode?: 'all_google_sources' | 'source_scoped';
+  source?: "gmail";
+  oauthMode?: "all_google_sources" | "source_scoped";
   connected: boolean;
   scopes?: string[];
   requestedScopes?: string[];
@@ -38,10 +38,10 @@ export type GmailSyncResult = {
   syncedCount: number;
   requestedCount?: number;
   queuedIndexingJobs?: number;
-  memoryIndexingStatus?: 'queued' | 'succeeded' | 'failed';
+  memoryIndexingStatus?: "queued" | "succeeded" | "failed";
 };
 
 export type GmailFeedback = {
-  type: 'success' | 'error';
+  type: "success" | "error";
   text: string;
 };

@@ -1,17 +1,17 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { useAuth } from '@/contexts/AuthContext';
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { useAuth } from "@/contexts/AuthContext";
 import {
   fetchContacts,
   fetchContactStatus,
   syncContacts,
-} from './google-contacts-api';
+} from "./google-contacts-api";
 import type {
   ContactConnectionStatus,
   ContactFeedback,
   GoogleContact,
-} from './google-contacts-types';
+} from "./google-contacts-types";
 
 type AuthContextValue = ReturnType<typeof useAuth>;
 
@@ -49,8 +49,11 @@ export function useGoogleContactsIntegration(auth: AuthContextValue) {
     } catch (error) {
       if (!mountedRef.current) return;
       setFeedback({
-        type: 'error',
-        text: error instanceof Error ? error.message : 'Could not load Google Contacts.',
+        type: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Could not load Google Contacts.",
       });
     } finally {
       if (mountedRef.current) setIsLoading(false);
@@ -68,29 +71,35 @@ export function useGoogleContactsIntegration(auth: AuthContextValue) {
     setFeedback(null);
   }, [isAuthenticated, loadContacts]);
 
-  const syncGoogleContacts = useCallback(async (limit?: number) => {
-    setIsSyncing(true);
-    setFeedback(null);
-    try {
-      const token = getAccessToken();
-      const result = await syncContacts(token, limit);
-      if (!mountedRef.current) return;
-      setFeedback({
-        type: 'success',
-        text: `Contacts synced: ${result.syncedCount} contact${result.syncedCount === 1 ? '' : 's'} queued for memory indexing.`,
-      });
-      loadingRef.current = false;
-      await loadContacts();
-    } catch (error) {
-      if (!mountedRef.current) return;
-      setFeedback({
-        type: 'error',
-        text: error instanceof Error ? error.message : 'Could not sync Google Contacts.',
-      });
-    } finally {
-      if (mountedRef.current) setIsSyncing(false);
-    }
-  }, [getAccessToken, loadContacts]);
+  const syncGoogleContacts = useCallback(
+    async (limit?: number) => {
+      setIsSyncing(true);
+      setFeedback(null);
+      try {
+        const token = getAccessToken();
+        const result = await syncContacts(token, limit);
+        if (!mountedRef.current) return;
+        setFeedback({
+          type: "success",
+          text: `Contacts synced: ${result.syncedCount} contact${result.syncedCount === 1 ? "" : "s"} queued for memory indexing.`,
+        });
+        loadingRef.current = false;
+        await loadContacts();
+      } catch (error) {
+        if (!mountedRef.current) return;
+        setFeedback({
+          type: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : "Could not sync Google Contacts.",
+        });
+      } finally {
+        if (mountedRef.current) setIsSyncing(false);
+      }
+    },
+    [getAccessToken, loadContacts],
+  );
 
   const clearFeedback = useCallback(() => setFeedback(null), []);
 

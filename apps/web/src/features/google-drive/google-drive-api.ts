@@ -3,52 +3,77 @@ import type {
   DriveSyncResult,
   GoogleDriveFile,
   GoogleDriveImportCandidate,
-} from './google-drive-types';
+} from "./google-drive-types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
-async function readApiError(response: Response, fallback: string): Promise<string> {
+async function readApiError(
+  response: Response,
+  fallback: string,
+): Promise<string> {
   try {
     const error = await response.json();
     const message = error?.message;
-    if (Array.isArray(message)) return message.join(', ');
-    if (typeof message === 'string' && message.trim()) return message;
+    if (Array.isArray(message)) return message.join(", ");
+    if (typeof message === "string" && message.trim()) return message;
     return fallback || `HTTP ${response.status}`;
   } catch {
     return fallback || `HTTP ${response.status}`;
   }
 }
 
-function authFetch(endpoint: string, options: RequestInit, accessToken: string | null): Promise<Response> {
+function authFetch(
+  endpoint: string,
+  options: RequestInit,
+  accessToken: string | null,
+): Promise<Response> {
   if (!accessToken) {
-    return Promise.reject(new Error('Your session has expired. Please sign in again.'));
+    return Promise.reject(
+      new Error("Your session has expired. Please sign in again."),
+    );
   }
 
   return fetch(`${API_URL}${endpoint}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
       Authorization: `Bearer ${accessToken}`,
       ...options.headers,
     },
   });
 }
 
-export async function fetchDriveStatus(accessToken: string | null): Promise<DriveConnectionStatus> {
-  const response = await authFetch('/api/drive/status', { method: 'GET' }, accessToken);
+export async function fetchDriveStatus(
+  accessToken: string | null,
+): Promise<DriveConnectionStatus> {
+  const response = await authFetch(
+    "/api/drive/status",
+    { method: "GET" },
+    accessToken,
+  );
   if (!response.ok) {
-    throw new Error(await readApiError(response, 'Failed to fetch Google Drive status'));
+    throw new Error(
+      await readApiError(response, "Failed to fetch Google Drive status"),
+    );
   }
   return response.json();
 }
 
-export async function fetchDriveFiles(accessToken: string | null): Promise<GoogleDriveFile[]> {
-  const response = await authFetch('/api/drive/files', { method: 'GET' }, accessToken);
+export async function fetchDriveFiles(
+  accessToken: string | null,
+): Promise<GoogleDriveFile[]> {
+  const response = await authFetch(
+    "/api/drive/files",
+    { method: "GET" },
+    accessToken,
+  );
   if (!response.ok) {
-    throw new Error(await readApiError(response, 'Failed to fetch Google Drive files'));
+    throw new Error(
+      await readApiError(response, "Failed to fetch Google Drive files"),
+    );
   }
 
-  const data = await response.json() as {
+  const data = (await response.json()) as {
     files?: Array<{
       id: string;
       name: string;
@@ -76,15 +101,23 @@ export async function fetchDriveImportCandidates(
   options: { limit?: number; query?: string } = {},
 ): Promise<GoogleDriveImportCandidate[]> {
   const params = new URLSearchParams();
-  if (options.limit) params.set('limit', String(options.limit));
-  if (options.query?.trim()) params.set('q', options.query.trim());
-  const query = params.toString() ? `?${params.toString()}` : '';
-  const response = await authFetch(`/api/drive/candidates${query}`, { method: 'GET' }, accessToken);
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.query?.trim()) params.set("q", options.query.trim());
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const response = await authFetch(
+    `/api/drive/candidates${query}`,
+    { method: "GET" },
+    accessToken,
+  );
   if (!response.ok) {
-    throw new Error(await readApiError(response, 'Failed to list Google Drive files'));
+    throw new Error(
+      await readApiError(response, "Failed to list Google Drive files"),
+    );
   }
 
-  const data = await response.json() as { candidates?: GoogleDriveImportCandidate[] };
+  const data = (await response.json()) as {
+    candidates?: GoogleDriveImportCandidate[];
+  };
   return data.candidates ?? [];
 }
 
@@ -93,24 +126,40 @@ export async function importDriveFiles(
   fileIds: string[],
 ): Promise<DriveSyncResult> {
   const response = await authFetch(
-    '/api/drive/import',
+    "/api/drive/import",
     {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify({ fileIds }),
     },
     accessToken,
   );
   if (!response.ok) {
-    throw new Error(await readApiError(response, 'Failed to import selected Google Drive files'));
+    throw new Error(
+      await readApiError(
+        response,
+        "Failed to import selected Google Drive files",
+      ),
+    );
   }
   return response.json();
 }
 
-export async function syncDriveFiles(accessToken: string | null, limit?: number): Promise<DriveSyncResult> {
-  const query = limit ? `?${new URLSearchParams({ limit: String(limit) })}` : '';
-  const response = await authFetch(`/api/drive/sync${query}`, { method: 'POST' }, accessToken);
+export async function syncDriveFiles(
+  accessToken: string | null,
+  limit?: number,
+): Promise<DriveSyncResult> {
+  const query = limit
+    ? `?${new URLSearchParams({ limit: String(limit) })}`
+    : "";
+  const response = await authFetch(
+    `/api/drive/sync${query}`,
+    { method: "POST" },
+    accessToken,
+  );
   if (!response.ok) {
-    throw new Error(await readApiError(response, 'Failed to sync Google Drive'));
+    throw new Error(
+      await readApiError(response, "Failed to sync Google Drive"),
+    );
   }
   return response.json();
 }

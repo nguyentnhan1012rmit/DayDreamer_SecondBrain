@@ -1,6 +1,6 @@
 export type ContactConnectionStatus = {
-  source?: 'contact';
-  oauthMode?: 'all_google_sources' | 'source_scoped';
+  source?: "contact";
+  oauthMode?: "all_google_sources" | "source_scoped";
   connected: boolean;
   scopes?: string[];
   requestedScopes?: string[];
@@ -25,10 +25,10 @@ export type ContactSyncResult = {
   message: string;
   syncedCount: number;
   queuedIndexingJobs?: number;
-  memoryIndexingStatus?: 'queued' | 'succeeded' | 'failed';
+  memoryIndexingStatus?: "queued" | "succeeded" | "failed";
 };
 
 export type ContactFeedback = {
-  type: 'success' | 'error';
+  type: "success" | "error";
   text: string;
 };

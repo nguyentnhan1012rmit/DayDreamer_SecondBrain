@@ -32,9 +32,10 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
 
   const setCollapsed = useCallback((value: SetStateAction<boolean>) => {
     setCollapsedState((current) => {
-      const next = typeof value === "function"
-        ? (value as (current: boolean) => boolean)(current)
-        : value;
+      const next =
+        typeof value === "function"
+          ? (value as (current: boolean) => boolean)(current)
+          : value;
 
       cachedSidebarCollapsed = next;
       writeSidebarCollapsedPreference(next);
@@ -68,7 +69,8 @@ function readSidebarCollapsedPreference() {
   if (typeof window === "undefined") return false;
 
   try {
-    cachedSidebarCollapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+    cachedSidebarCollapsed =
+      window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
   } catch {
     cachedSidebarCollapsed = false;
   }
@@ -80,7 +82,10 @@ function writeSidebarCollapsedPreference(value: boolean) {
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, value ? "true" : "false");
+    window.localStorage.setItem(
+      SIDEBAR_COLLAPSED_KEY,
+      value ? "true" : "false",
+    );
   } catch {
     // Storage can be unavailable in private browsing or embedded previews.
   }

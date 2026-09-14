@@ -118,6 +118,7 @@ describe('SummaryService', () => {
       where: {
         id: 'summary-2',
         user_id: 'user-1',
+        dirty: false,
       },
     });
   });
@@ -153,6 +154,7 @@ describe('SummaryService', () => {
     expect(prisma.summary.update).not.toHaveBeenCalled();
     expect(result).toEqual({
       generated: false,
+      stale: false,
       summary: expect.objectContaining({
         id: 'summary-1',
         type: 'daily',

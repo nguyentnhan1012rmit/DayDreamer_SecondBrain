@@ -9,7 +9,9 @@ function CallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { supabase } = useAuth();
-  const [status, setStatus] = useState<"processing" | "success" | "error">("processing");
+  const [status, setStatus] = useState<"processing" | "success" | "error">(
+    "processing",
+  );
   const [message, setMessage] = useState("Processing your authentication...");
   const hasProcessedCallback = useRef(false);
 
@@ -25,7 +27,8 @@ function CallbackContent() {
       hasProcessedCallback.current = true;
 
       try {
-        const authError = searchParams.get("error_description") || searchParams.get("error");
+        const authError =
+          searchParams.get("error_description") || searchParams.get("error");
         if (authError) {
           setStatus("error");
           setMessage(authError);
@@ -34,7 +37,8 @@ function CallbackContent() {
 
         const code = searchParams.get("code");
         if (code) {
-          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          const { error: exchangeError } =
+            await supabase.auth.exchangeCodeForSession(code);
           if (exchangeError) {
             setStatus("error");
             setMessage(exchangeError.message);
@@ -91,29 +95,55 @@ function CallbackContent() {
             <div className="skeleton-line mx-auto h-3 w-36" />
             <div className="skeleton-line mx-auto h-3 w-24" />
           </div>
-          <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-400">{message}</p>
+          <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-400">
+            {message}
+          </p>
         </>
       )}
 
       {status === "success" && (
         <>
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/40">
-            <svg className="h-7 w-7 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            <svg
+              className="h-7 w-7 text-emerald-600 dark:text-emerald-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M5 13l4 4L19 7"
+              />
             </svg>
           </div>
-          <p className="mt-4 text-sm font-medium text-emerald-700 dark:text-emerald-300">{message}</p>
+          <p className="mt-4 text-sm font-medium text-emerald-700 dark:text-emerald-300">
+            {message}
+          </p>
         </>
       )}
 
       {status === "error" && (
         <>
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-rose-100 dark:bg-rose-900/40">
-            <svg className="h-7 w-7 text-rose-600 dark:text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg
+              className="h-7 w-7 text-rose-600 dark:text-rose-400"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </div>
-          <p className="mt-4 text-sm font-medium text-rose-700 dark:text-rose-300">{message}</p>
+          <p className="mt-4 text-sm font-medium text-rose-700 dark:text-rose-300">
+            {message}
+          </p>
           <button
             onClick={() => router.push("/login")}
             className="mt-4 cursor-pointer rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 dark:bg-indigo-600 dark:hover:bg-indigo-500"
@@ -136,7 +166,9 @@ export default function AuthCallbackPage() {
               <div className="skeleton-line mx-auto h-3 w-36" />
               <div className="skeleton-line mx-auto h-3 w-24" />
             </div>
-            <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-400">Processing...</p>
+            <p className="mt-4 text-sm font-medium text-slate-600 dark:text-slate-400">
+              Processing...
+            </p>
           </div>
         }
       >

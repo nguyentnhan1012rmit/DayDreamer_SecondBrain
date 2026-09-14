@@ -25,6 +25,7 @@ model CalendarEvent {
 
   description String? @db.Text
   html_link   String?
+  content_hash String?
 
 
   created_at DateTime @default(now())
@@ -73,6 +74,12 @@ model GoogleDriveFile {
   size           BigInt?
   modified_time  DateTime?
   extracted_text String?  @db.Text
+  content_hash   String?
+  extraction_status String @default("pending")
+  extraction_completeness Float?
+  extraction_error String? @db.Text
+  extraction_attempts Int @default(0)
+  extraction_updated_at DateTime?
   raw_json       Json?
 
   created_at DateTime @default(now())
@@ -83,6 +90,7 @@ model GoogleDriveFile {
 
   @@unique([user_id, external_id], map: "google_drive_files_user_external_key")
   @@index([user_id, modified_time], map: "google_drive_files_user_modified_time_idx")
+  @@index([user_id, extraction_status], map: "google_drive_files_user_extraction_status_idx")
   @@map("google_drive_files")
 }
 
@@ -115,14 +123,18 @@ model Summary {
   period_start DateTime
   period_end   DateTime
   content      String   @db.Text
+  source_version BigInt @default(0)
+  dirty          Boolean @default(true)
 
   created_at DateTime @default(now())
+  updated_at DateTime @default(now()) @updatedAt
 
   // Relations
   user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@unique([user_id, summary_type, period_start, period_end], map: "summaries_user_type_period_key")
   @@index([user_id, period_start], map: "summaries_user_period_start_idx")
+  @@index([dirty, period_end], map: "summaries_dirty_period_end_idx")
   @@map("summaries")
 }
 
@@ -155,6 +167,8 @@ model GmailMessage {
   snippet     String?
   body        String   @db.Text
   received_at DateTime?
+  history_id  String?
+  content_hash String?
   raw_json    Json?
 
   created_at DateTime @default(now())
@@ -176,6 +190,7 @@ model User {
   display_name     String?
   role             String  @default("user")
   google_connected Boolean @default(false) // Tracks OAuth status
+  memory_revision  BigInt  @default(0)
 
   // OAuth Tokens (Needed for your calendar/gmail sync jobs)
   google_access_token  String?
@@ -218,6 +233,7 @@ model DiaryEntry {
   calendar_events CalendarEvent[] // Linked events from your matching logic
 
   @@index([user_id, entry_date(sort: Desc)], map: "diary_entries_user_entry_date_idx")
+  @@index([user_id, created_at(sort: Desc), id(sort: Desc)], map: "diary_entries_user_created_id_idx")
   @@map("diary_entries")
 }
 
@@ -227,6 +243,12 @@ model Attachment {
   storage_path   String
   file_type      String
   extracted_text String? @db.Text
+  content_hash   String?
+  extraction_status String @default("pending")
+  extraction_completeness Float?
+  extraction_error String? @db.Text
+  extraction_attempts Int @default(0)
+  extraction_updated_at DateTime?
 
   created_at DateTime @default(now())
 
@@ -255,6 +277,7 @@ model SearchHistory {
 
   @@index([user_id, created_at(sort: Desc)], map: "search_history_user_created_idx")
   @@index([user_id, question], map: "search_history_user_question_idx")
+  @@index([expires_at], map: "search_history_expires_at_idx")
   @@map("search_history")
 }
 
@@ -269,6 +292,7 @@ model IndexingOutbox {
   max_retries Int      @default(3)
   error       String?  @db.Text
   payload     Json?
+  generation  Int      @default(1)
   run_after   DateTime @default(now())
   locked_at   DateTime?
   locked_by   String?  @db.VarChar(128)
@@ -283,7 +307,27 @@ model IndexingOutbox {
   @@unique([job_type, source_type, source_id], map: "indexing_outbox_job_source_key")
   @@index([status, run_after, created_at], map: "indexing_outbox_status_run_after_idx")
   @@index([user_id, status, created_at], map: "indexing_outbox_user_status_created_idx")
+  @@index([status, processed_at], map: "indexing_outbox_status_processed_at_idx")
   @@map("indexing_outbox")
+}
+
+model StorageDeletionOutbox {
+  id            String   @id @default(uuid())
+  user_id       String?
+  bucket        String
+  storage_path  String
+  status        String   @default("pending")
+  retry_count   Int      @default(0)
+  max_retries   Int      @default(10)
+  error         String?  @db.Text
+  run_after     DateTime @default(now())
+  processed_at  DateTime?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @default(now()) @updatedAt
+
+  @@unique([bucket, storage_path], map: "storage_deletion_outbox_bucket_path_key")
+  @@index([status, run_after, created_at], map: "storage_deletion_outbox_status_run_after_idx")
+  @@map("storage_deletion_outbox")
 }
 
 model WorkerHeartbeat {
@@ -309,6 +353,7 @@ model MemoryChunk {
   text       String   @db.Text
   evidence   String?  @db.Text
   metadata   Json?
+  searchDocument Unsupported("tsvector")? @map("search_document")
   occurredAt DateTime @default(now()) @map("occurred_at")
   embedding  Unsupported("vector(768)")?
   createdAt  DateTime @default(now()) @map("created_at")

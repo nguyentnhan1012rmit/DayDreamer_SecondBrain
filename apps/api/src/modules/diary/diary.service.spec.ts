@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { generateAiText } from '@second-brain/ai';
 import { DiaryService } from './diary.service';
 
@@ -9,11 +9,25 @@ jest.mock('@second-brain/ai', () => ({
     .fn()
     .mockResolvedValue('What part of this moment do you want to remember?'),
   getTuturuuuAnswerModel: jest.fn().mockReturnValue('test-answer-model'),
+  getSummaryPeriod: jest.fn().mockReturnValue({
+    start: new Date('2026-01-01T00:00:00.000Z'),
+    end: new Date('2026-12-31T23:59:59.999Z'),
+    timeZone: 'UTC',
+    localStart: '2026-01-01',
+    localEnd: '2026-12-31',
+  }),
 }));
 jest.mock('@second-brain/db', () => ({
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+  },
   insertMemoryChunks: jest.fn(),
   pruneMemoryChunksForSource: jest.fn(),
   deleteMemoryChunksForSource: jest.fn(),
+  markMemorySourcesChanged: jest.fn().mockResolvedValue(1n),
 }));
 
 describe('DiaryService', () => {
@@ -33,6 +47,7 @@ describe('DiaryService', () => {
       findMany: jest.fn(),
       deleteMany: jest.fn(),
     },
+    $queryRaw: jest.fn(),
     $transaction: jest.fn((fn: any) => fn(prisma)),
   };
   const storageService = {
@@ -47,7 +62,7 @@ describe('DiaryService', () => {
       async (_bucket: string, path: string) => `https://storage.local/${path}`,
     );
     prisma.indexingOutbox.findMany.mockResolvedValue([]);
-    service = new DiaryService(prisma as any, storageService as any);
+    service = new DiaryService(prisma as any);
   });
 
   it('creates one grounded reflection question for a saved entry', async () => {
@@ -224,6 +239,9 @@ describe('DiaryService', () => {
             storage_path: true,
             file_type: true,
             extracted_text: true,
+            extraction_status: true,
+            extraction_completeness: true,
+            extraction_error: true,
             created_at: true,
           },
           orderBy: { created_at: 'asc' },
@@ -239,11 +257,49 @@ describe('DiaryService', () => {
           orderBy: { start_time: 'asc' },
         },
       },
-      orderBy: [{ entry_date: 'desc' }, { created_at: 'desc' }],
-      take: 100,
+      orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
+      take: 26,
     });
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ id: 'diary-1', title: 'Title' });
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toMatchObject({ id: 'diary-1', title: 'Title' });
+    expect(result).toMatchObject({ nextCursor: null, hasMore: false });
+  });
+
+  it('pushes timeline date filtering into the diary query', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+    prisma.diaryEntry.findMany.mockResolvedValue([]);
+
+    await service.findAll('supabase-user-1', {
+      startDate: '2026-05-18T00:00:00.000Z',
+      endDate: '2026-05-18T23:59:59.999Z',
+    });
+
+    expect(prisma.diaryEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          user_id: 'user-1',
+          entry_date: {
+            gte: new Date('2026-05-18T00:00:00.000Z'),
+            lte: new Date('2026-05-18T23:59:59.999Z'),
+          },
+        },
+      }),
+    );
+  });
+
+  it('rejects invalid or reversed timeline date ranges', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+    await expect(
+      service.findAll('supabase-user-1', { startDate: 'not-a-date' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.findAll('supabase-user-1', {
+        startDate: '2026-05-19T00:00:00.000Z',
+        endDate: '2026-05-18T00:00:00.000Z',
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.diaryEntry.findMany).not.toHaveBeenCalled();
   });
 
   it('normalizes and returns diary mood and tags', async () => {
@@ -293,7 +349,7 @@ describe('DiaryService', () => {
     );
   });
 
-  it('returns signed attachment urls without exposing storage paths', async () => {
+  it('batch-loads attachment jobs without signing timeline urls', async () => {
     const createdAt = new Date('2026-05-18T09:00:00.000Z');
     prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
     prisma.diaryEntry.findMany.mockResolvedValue([
@@ -327,22 +383,118 @@ describe('DiaryService', () => {
 
     const result = await service.findAll('supabase-user-1');
 
-    expect(storageService.createSignedUrl).toHaveBeenCalledWith(
-      'attachments-bucket',
-      'attachments/user-1/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa-file.pdf',
-    );
-    expect(result[0].attachments).toEqual([
+    expect(storageService.createSignedUrl).not.toHaveBeenCalled();
+    expect(prisma.indexingOutbox.findMany).toHaveBeenCalledTimes(1);
+    expect(result.entries[0].attachments).toEqual([
       expect.objectContaining({
         id: 'attachment-1',
         fileName: 'file.pdf',
-        signedUrl:
-          'https://storage.local/attachments/user-1/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa-file.pdf',
         extractionStatus: 'extracted',
         extractedTextPreview: 'Extracted text',
         extractedCharacterCount: 14,
         indexingStatus: 'succeeded',
       }),
     ]);
+  });
+
+  it('returns a stable cursor when another page is available', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+    prisma.diaryEntry.findMany.mockResolvedValue(
+      Array.from({ length: 3 }, (_, index) => ({
+        id: `diary-${3 - index}`,
+        raw_text: `Title ${index}\n\nContent`,
+        status: 'published',
+        created_at: new Date(`2026-05-1${3 - index}T09:00:00.000Z`),
+        updated_at: new Date(`2026-05-1${3 - index}T09:00:00.000Z`),
+        attachments: [],
+        calendar_events: [],
+      })),
+    );
+
+    const result = await service.findAll('supabase-user-1', { limit: 2 });
+
+    expect(result.entries.map((entry) => entry.id)).toEqual([
+      'diary-3',
+      'diary-2',
+    ]);
+    expect(result.hasMore).toBe(true);
+    expect(result.nextCursor).toEqual(expect.any(String));
+    expect(prisma.diaryEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 3 }),
+    );
+  });
+
+  it('keeps a 25-entry timeline page bounded with one attachment-job query', async () => {
+    const createdAt = new Date('2026-05-18T09:00:00.000Z');
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+    prisma.diaryEntry.findMany.mockResolvedValue(
+      Array.from({ length: 25 }, (_, index) => ({
+        id: `diary-${index}`,
+        raw_text: `Memory ${index}\n\n${'A useful diary sentence. '.repeat(40)}`,
+        status: 'published',
+        mood: 'good',
+        tags: ['focus'],
+        created_at: new Date(createdAt.getTime() - index * 60_000),
+        updated_at: createdAt,
+        attachments: [
+          {
+            id: `attachment-${index}`,
+            storage_path: `attachments/user-1/file-${index}.pdf`,
+            file_type: 'application/pdf',
+            extracted_text: 'Extracted document context. '.repeat(20),
+            created_at: createdAt,
+          },
+        ],
+        calendar_events: [],
+      })),
+    );
+    prisma.indexingOutbox.findMany.mockResolvedValue([]);
+
+    const result = await service.findAll('supabase-user-1');
+    const payloadBytes = Buffer.byteLength(JSON.stringify(result));
+
+    expect(result.entries).toHaveLength(25);
+    expect(prisma.indexingOutbox.findMany).toHaveBeenCalledTimes(1);
+    expect(storageService.createSignedUrl).not.toHaveBeenCalled();
+    expect(payloadBytes).toBeLessThan(300 * 1024);
+  });
+
+  it('aggregates yearly statistics without loading attachments', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        totalEntries: 2,
+        activeDays: 1,
+        totalWords: 6,
+        moodCounts: { great: 1, good: 1 },
+        topTags: [
+          { tag: 'focus', count: 2 },
+          { tag: 'health', count: 1 },
+        ],
+        days: [{ date: '2026-05-18', entryCount: 2, wordCount: 6 }],
+        availableYears: [2024, 2026, 2025],
+      },
+    ]);
+
+    const result = await service.getStatistics('supabase-user-1', {
+      period: 'yearly',
+      anchor: '2026-05-18T12:00:00.000Z',
+      timeZone: 'UTC',
+    });
+
+    expect(result).toMatchObject({
+      totalEntries: 2,
+      activeDays: 1,
+      totalWords: 6,
+      moodCounts: { great: 1, good: 1, neutral: 0, bad: 0 },
+      topTags: [
+        { tag: 'focus', count: 2 },
+        { tag: 'health', count: 1 },
+      ],
+      availableYears: [2026, 2025, 2024],
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.diaryEntry.findMany).not.toHaveBeenCalled();
   });
 
   describe('toClientEntry robust parsing fallbacks', () => {
@@ -360,7 +512,7 @@ describe('DiaryService', () => {
         },
       ]);
       const result = await service.findAll('supabase-user-1');
-      expect(result[0]).toMatchObject({
+      expect(result.entries[0]).toMatchObject({
         title: 'A Beautiful Day',
         content: 'I went to the park and had a great time.',
       });
@@ -380,7 +532,7 @@ describe('DiaryService', () => {
         },
       ]);
       const result = await service.findAll('supabase-user-1');
-      expect(result[0]).toMatchObject({
+      expect(result.entries[0]).toMatchObject({
         title: 'Single Newline Title',
         content: 'This is content on a single newline.',
       });
@@ -399,7 +551,7 @@ describe('DiaryService', () => {
         },
       ]);
       const result = await service.findAll('supabase-user-1');
-      expect(result[0]).toMatchObject({
+      expect(result.entries[0]).toMatchObject({
         title: 'Just a short note with no newlines',
         content: 'Just a short note with no newlines',
       });
@@ -419,10 +571,10 @@ describe('DiaryService', () => {
         },
       ]);
       const result = await service.findAll('supabase-user-1');
-      expect(result[0].title).toBe(
+      expect(result.entries[0].title).toBe(
         'This is a very long diary entry without any newline chara...',
       );
-      expect(result[0].content).toBe(
+      expect(result.entries[0].content).toBe(
         'This is a very long diary entry without any newline characters because the user typed a long single line stream of conscious thoughts containing a lot of details.',
       );
     });

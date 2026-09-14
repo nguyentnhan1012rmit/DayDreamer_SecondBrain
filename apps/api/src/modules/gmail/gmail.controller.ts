@@ -19,10 +19,12 @@ export class GmailController {
     @Req() req,
     @Query('limit') limit?: string,
     @Query('q') query?: string,
+    @Query('pageToken') pageToken?: string,
   ) {
     return this.gmailService.listImportCandidates(req.user.userId, {
       limit: this.parseMessageLimit(limit),
       query,
+      pageToken,
     });
   }
 
@@ -58,6 +60,6 @@ export class GmailController {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return undefined;
 
-    return Math.min(Math.max(parsed, 1), 100);
+    return Math.min(Math.max(parsed, 1), 500);
   }
 }

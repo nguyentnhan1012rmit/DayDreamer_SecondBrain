@@ -6,6 +6,8 @@ import { getSecurityHeaderStatus } from '../../common/middleware/security-header
 import { getSearchCacheStatus } from '../../common/cache/search-answer-cache';
 import { getQueryEmbeddingCacheStatus } from '../../common/cache/query-embedding-cache';
 import { TUTURUUU_EMBEDDING_MODEL } from '@second-brain/ai';
+import { getPerformanceMetricsSnapshot } from '../../common/performance/performance-metrics';
+import { resolveSupabaseServiceRoleKey } from '@second-brain/shared';
 
 type DbCountRow = {
   status: string;
@@ -196,6 +198,7 @@ export class HealthService {
       },
       indexingOutbox: outbox,
       embeddingIndex,
+      performance: getPerformanceMetricsSnapshot(),
       warnings: this.buildWarnings({
         database,
         env,
@@ -465,11 +468,7 @@ export class HealthService {
   }
 
   private getEnvironmentStatus(redis: Awaited<ReturnType<typeof checkRedisRateLimitHealth>>) {
-    const supabaseServerKey =
-      process.env.SUPABASE_SERVICE_ROLE_KEY ??
-      process.env.SUPABASE_SERVICE_KEY ??
-      process.env.SUPABASE_SECRET_KEY ??
-      process.env.SECRET_KEY;
+    const supabaseServerKey = resolveSupabaseServiceRoleKey();
     const supabaseServerKeyIsPublishable = supabaseServerKey?.startsWith('sb_publishable') ?? false;
 
     return {
