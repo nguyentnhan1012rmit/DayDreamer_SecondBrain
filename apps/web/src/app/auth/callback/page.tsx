@@ -8,12 +8,12 @@ import { syncSessionWithBackend } from "@/lib/auth-flow";
 function CallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { supabase } = useAuth();
+  const { supabase, session, isLoading } = useAuth();
   const [status, setStatus] = useState<"processing" | "success" | "error">(
     "processing",
   );
   const [message, setMessage] = useState("Processing your authentication...");
-  const hasProcessedCallback = useRef(false);
+  const hasExchangedCode = useRef(false);
 
   useEffect(() => {
     if (!supabase) {
@@ -22,70 +22,64 @@ function CallbackContent() {
       return;
     }
 
-    const handleCallback = async () => {
-      if (hasProcessedCallback.current) return;
-      hasProcessedCallback.current = true;
+    const authError =
+      searchParams.get("error_description") || searchParams.get("error");
+    if (authError) {
+      setStatus("error");
+      setMessage(authError);
+      return;
+    }
 
-      try {
-        const authError =
-          searchParams.get("error_description") || searchParams.get("error");
-        if (authError) {
-          setStatus("error");
-          setMessage(authError);
-          return;
-        }
-
-        const code = searchParams.get("code");
-        if (code) {
-          const { error: exchangeError } =
-            await supabase.auth.exchangeCodeForSession(code);
-          if (exchangeError) {
-            setStatus("error");
-            setMessage(exchangeError.message);
-            return;
-          }
-        }
-
-        const { data, error } = await supabase.auth.getSession();
-
+    const code = searchParams.get("code");
+    if (code && !hasExchangedCode.current) {
+      hasExchangedCode.current = true;
+      supabase.auth.exchangeCodeForSession(code).then(({ error }) => {
         if (error) {
           setStatus("error");
           setMessage(error.message);
-          return;
         }
+      });
+      // Do not return here; let the session effect handle the rest
+      // once exchangeCodeForSession triggers onAuthStateChange
+    }
 
-        if (data.session) {
-          await syncSessionWithBackend(data.session).catch((syncError) => {
-            console.warn(
-              "[Auth] Backend sync after OAuth callback failed:",
-              syncError instanceof Error ? syncError.message : syncError,
-            );
-          });
+    // Wait for the auth context to finish loading the session
+    if (isLoading) return;
 
-          const type = searchParams.get("type");
+    if (session) {
+      const type = searchParams.get("type");
 
-          if (type === "recovery") {
-            setStatus("success");
-            setMessage("Password reset confirmed. Redirecting...");
-            setTimeout(() => router.push("/diary"), 2000);
-          } else {
-            setStatus("success");
-            setMessage("Email confirmed! Redirecting to your diary...");
-            setTimeout(() => router.push("/diary"), 1500);
-          }
-        } else {
-          setStatus("success");
-          setMessage("Email confirmed! You can now sign in.");
-          setTimeout(() => router.push("/login"), 2000);
-        }
-      } catch {
-        setStatus("error");
-        setMessage("Something went wrong during authentication.");
+      if (type === "recovery") {
+        setStatus("success");
+        setMessage("Password reset confirmed. Redirecting...");
+        const timer = setTimeout(() => router.push("/diary"), 2000);
+        return () => clearTimeout(timer);
+      } else {
+        setStatus("success");
+        setMessage("Authentication successful! Redirecting to your diary...");
+        const timer = setTimeout(() => router.push("/diary"), 1500);
+        return () => clearTimeout(timer);
       }
-    };
+    } else {
+      // No session. If there's an access_token in the hash, Supabase might still be parsing it.
+      // But typically isLoading would be true until onAuthStateChange fires.
+      // Just in case, check the hash.
+      if (
+        typeof window !== "undefined" &&
+        window.location.hash.includes("access_token")
+      ) {
+        // Still processing hash, stay in processing state
+        return;
+      }
 
-    handleCallback();
-  }, [supabase, router, searchParams]);
+      // No session and no hash, meaning email is confirmed but user needs to log in,
+      // or they just visited the callback page directly.
+      setStatus("success");
+      setMessage("Email confirmed! You can now sign in.");
+      const timer = setTimeout(() => router.push("/login"), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [supabase, router, searchParams, session, isLoading]);
 
   return (
     <div className="w-full max-w-md enterprise-card p-8 text-center">

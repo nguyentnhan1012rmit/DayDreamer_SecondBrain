@@ -45,7 +45,7 @@ export function rateLimitMiddleware(
   res: Response,
   next: NextFunction,
 ) {
-  if (process.env.RATE_LIMIT_ENABLED === 'false') {
+  if (process.env.RATE_LIMIT_ENABLED === 'false' || req.method === 'OPTIONS') {
     next();
     return;
   }

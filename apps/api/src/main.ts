@@ -34,17 +34,18 @@ async function bootstrap() {
   configureTrustProxy(app, logger);
 
   app.setGlobalPrefix('api');
-  app.use(requestIdMiddleware);
-  app.use(performanceMiddleware);
-  app.use(securityHeadersMiddleware);
-  app.use(auditLogMiddleware);
-  app.use(rateLimitMiddleware);
-
+  
   app.enableCors({
     origin: getCorsOrigins(),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
+
+  app.use(requestIdMiddleware);
+  app.use(performanceMiddleware);
+  app.use(securityHeadersMiddleware);
+  app.use(auditLogMiddleware);
+  app.use(rateLimitMiddleware);
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
