@@ -150,7 +150,7 @@ function sleepBeforeRetry(delayMs: number, signal?: AbortSignal): Promise<void> 
     const onAbort = () => {
       if (timeout) clearTimeout(timeout);
       signal?.removeEventListener("abort", onAbort);
-      reject(signal.reason ?? new Error("Tuturuuu request aborted."));
+      reject(signal!.reason ?? new Error("Tuturuuu request aborted."));
     };
     timeout = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);

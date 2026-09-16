@@ -24,5 +24,15 @@ coverage
 pnpm-state
 .pnpm-store
 pnpm-cache
+pnpm_tmp
 tmp
 temp
+output
+poster
+.ui-work
+.agents
+.idea
+.vscode
+docs
+render.yaml
+skills-lock.json

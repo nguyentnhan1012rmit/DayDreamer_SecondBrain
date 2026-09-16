@@ -1,0 +1,211 @@
+# render.yaml — Render Blueprint for Second Brain backend services
+# Docs: https://docs.render.com/blueprint-spec
+#
+# Deploy: push this file to your repo, then go to
+# https://dashboard.render.com/select-repo?type=blueprint
+# and select this repository.
+#
+# IMPORTANT: After the first deploy, set all environment variables
+# listed below in the Render dashboard under each service's
+# "Environment" tab. Variables marked `sync: false` must be set manually.
+
+services:
+  # ── NestJS API ──────────────────────────────────────────────
+  - type: web
+    name: second-brain-api
+    runtime: docker
+    repo: https://github.com/nguyentnhan1012rmit/Capstone_DaydreamGroupProject.git
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerTarget: api
+    plan: free
+    healthCheckPath: /api/health/ready
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: TRUST_PROXY
+        value: "1"
+
+      # ── Supabase ──
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PROJECT_ID
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # ── Database ──
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+
+      # ── Google OAuth ──
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: GOOGLE_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: GOOGLE_STORE_RAW_PAYLOADS
+        value: "false"
+      - key: GOOGLE_GMAIL_BODY_MAX_CHARS
+        value: "20000"
+
+      # ── AI / Tuturuuu ──
+      - key: TUTURUUU_AI_API_KEY
+        sync: false
+      - key: TUTURUUU_AI_BASE_URL
+        value: https://ai.tuturuuu.com/v1
+      - key: TUTURUUU_EMBEDDING_MODEL
+        value: google/gemini-embedding-2
+      - key: TUTURUUU_ANSWER_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: TUTURUUU_CHUNK_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: TUTURUUU_SUMMARY_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: TUTURUUU_VISION_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: AUDIO_TRANSCRIPTION_PROVIDER
+        value: tuturuuu
+
+      # ── URLs (update after first deploy with actual Render/Vercel URLs) ──
+      - key: CORS_ORIGIN
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: API_URL
+        sync: false
+
+      # ── Auth ──
+      - key: AUTH_REQUIRE_EMAIL_VERIFIED
+        value: "false"
+      - key: ADMIN_REQUIRE_EMAIL_VERIFIED
+        value: "false"
+      - key: ADMIN_EMAILS
+        sync: false
+
+      # ── Redis (optional — set to empty string to disable) ──
+      - key: REDIS_URL
+        sync: false
+      - key: SEARCH_REDIS_CACHE_ENABLED
+        value: "true"
+      - key: QUERY_EMBEDDING_REDIS_CACHE_ENABLED
+        value: "true"
+      - key: QUERY_EMBEDDING_CACHE_TTL_SECONDS
+        value: "604800"
+
+      # ── Rate Limiting ──
+      - key: RATE_LIMIT_DEFAULT_MAX
+        value: "240"
+      - key: RATE_LIMIT_AI_MAX
+        value: "24"
+      - key: RATE_LIMIT_UPLOAD_MAX
+        value: "20"
+      - key: RATE_LIMIT_AUTH_MAX
+        value: "60"
+
+      # ── Sentry ──
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.1"
+
+      # ── Timezone ──
+      - key: APP_TIMEZONE
+        value: Asia/Ho_Chi_Minh
+
+  # ── Background Worker ──────────────────────────────────────
+  - type: web
+    name: second-brain-worker
+    runtime: docker
+    repo: https://github.com/nguyentnhan1012rmit/Capstone_DaydreamGroupProject.git
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerTarget: worker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3002"
+
+      # ── Supabase ──
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PROJECT_ID
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # ── Database ──
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+
+      # ── Google OAuth (needed for calendar sync) ──
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: GOOGLE_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: GOOGLE_STORE_RAW_PAYLOADS
+        value: "false"
+      - key: GOOGLE_GMAIL_BODY_MAX_CHARS
+        value: "20000"
+
+      # ── AI / Tuturuuu ──
+      - key: TUTURUUU_AI_API_KEY
+        sync: false
+      - key: TUTURUUU_AI_BASE_URL
+        value: https://ai.tuturuuu.com/v1
+      - key: TUTURUUU_EMBEDDING_MODEL
+        value: google/gemini-embedding-2
+      - key: TUTURUUU_ANSWER_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: TUTURUUU_CHUNK_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: TUTURUUU_SUMMARY_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: TUTURUUU_VISION_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: AUDIO_TRANSCRIPTION_PROVIDER
+        value: tuturuuu
+
+      # ── Redis ──
+      - key: REDIS_URL
+        sync: false
+      - key: QUERY_EMBEDDING_REDIS_CACHE_ENABLED
+        value: "true"
+      - key: QUERY_EMBEDDING_CACHE_TTL_SECONDS
+        value: "604800"
+
+      # ── Sentry ──
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0.1"
+
+      # ── Timezone ──
+      - key: APP_TIMEZONE
+        value: Asia/Ho_Chi_Minh

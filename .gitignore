@@ -34,6 +34,12 @@ output/
 tmp/
 pnpm_tmp/
 .artifacts/
+.ui-work/
+poster/
+
+# Agent skills (auto-generated)
+/.agents
+skills-lock.json
 
 # npm lockfiles in pnpm workspace
 **/package-lock.json
