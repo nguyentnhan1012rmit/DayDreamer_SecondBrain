@@ -208,6 +208,7 @@ async function enqueueIndexingJob(
     update: {
       user_id: input.userId,
       status: "pending",
+      generation: { increment: 1 },
       retry_count: 0,
       error: null,
       payload: input.payload ?? {},
@@ -385,6 +386,23 @@ async function main() {
       });
     }
 
+    const sourceState = await prisma.$transaction(async (tx: any) => {
+      const updatedUser = await tx.user.update({
+        where: { id: user.id },
+        data: { memory_revision: { increment: 1 } },
+        select: { memory_revision: true },
+      });
+      await tx.summary.updateMany({
+        where: { user_id: user.id },
+        data: { dirty: true },
+      });
+      await tx.searchHistory.updateMany({
+        where: { user_id: user.id, expires_at: { gt: new Date() } },
+        data: { expires_at: new Date() },
+      });
+      return updatedUser;
+    });
+
     const todayStart = startOfUtcDay(anchor);
     const weekStart = startOfUtcWeek(anchor);
 
@@ -400,6 +418,8 @@ async function main() {
       update: {
         content:
           "The team closed the MVP checklist around diary entries, Calendar linking, memory chunks, summaries, and outbox health. The next step is to rehearse search answers with citations.",
+        source_version: sourceState.memory_revision,
+        dirty: false,
       },
       create: {
         user_id: user.id,
@@ -408,6 +428,8 @@ async function main() {
         period_end: endOfUtcDay(todayStart),
         content:
           "The team closed the MVP checklist around diary entries, Calendar linking, memory chunks, summaries, and outbox health. The next step is to rehearse search answers with citations.",
+        source_version: sourceState.memory_revision,
+        dirty: false,
       },
     });
 
@@ -430,6 +452,8 @@ async function main() {
       update: {
         content:
           "This week the team moved the Second Brain MVP from raw diary capture toward a complete memory product. The strongest progress was grounded search with citations, Calendar-linked diary context, attachment ingestion, and a clearer readiness panel. The main demo risk is making sure indexing jobs are drained before rehearsal and Tuturuuu quota does not block live answers.",
+        source_version: sourceState.memory_revision,
+        dirty: false,
       },
       create: {
         user_id: user.id,
@@ -438,6 +462,8 @@ async function main() {
         period_end: new Date(weekStart.getTime() + 7 * dayMs - 1),
         content:
           "This week the team moved the Second Brain MVP from raw diary capture toward a complete memory product. The strongest progress was grounded search with citations, Calendar-linked diary context, attachment ingestion, and a clearer readiness panel. The main demo risk is making sure indexing jobs are drained before rehearsal and Tuturuuu quota does not block live answers.",
+        source_version: sourceState.memory_revision,
+        dirty: false,
       },
     });
 

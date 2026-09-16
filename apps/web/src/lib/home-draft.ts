@@ -1,4 +1,4 @@
-import type { DiaryMood } from "@/lib/api-client";
+import type { DiaryMood } from "@/lib/api/diary-api";
 
 export const HOME_DRAFT_STORAGE_KEY = "daydreamer-home-draft-v1";
 
@@ -12,7 +12,8 @@ export type HomeDraft = {
 
 export function buildHomeDraft(content: string): HomeDraft {
   const trimmedContent = content.trim();
-  const firstLine = trimmedContent.split(/\n|[.!?](?:\s|$)/)[0]?.trim() || "A new memory";
+  const firstLine =
+    trimmedContent.split(/\n|[.!?](?:\s|$)/)[0]?.trim() || "A new memory";
 
   return {
     title: firstLine.slice(0, 80),
@@ -33,13 +34,21 @@ export function readHomeDraft(): HomeDraft | null {
     if (typeof draft.content !== "string" || !draft.content.trim()) return null;
 
     return {
-      title: typeof draft.title === "string" && draft.title.trim() ? draft.title : "A new memory",
+      title:
+        typeof draft.title === "string" && draft.title.trim()
+          ? draft.title
+          : "A new memory",
       content: draft.content,
-      entryDate: typeof draft.entryDate === "string" ? draft.entryDate : new Date().toISOString().slice(0, 10),
+      entryDate:
+        typeof draft.entryDate === "string"
+          ? draft.entryDate
+          : new Date().toISOString().slice(0, 10),
       mood: ["great", "good", "neutral", "bad"].includes(draft.mood ?? "")
-        ? draft.mood as DiaryMood
+        ? (draft.mood as DiaryMood)
         : "neutral",
-      tags: Array.isArray(draft.tags) ? draft.tags.filter((tag): tag is string => typeof tag === "string") : [],
+      tags: Array.isArray(draft.tags)
+        ? draft.tags.filter((tag): tag is string => typeof tag === "string")
+        : [],
     };
   } catch {
     return null;

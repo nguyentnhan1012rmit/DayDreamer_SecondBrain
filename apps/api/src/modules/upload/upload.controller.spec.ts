@@ -10,6 +10,7 @@ import {
   insertMemoryChunks,
   pruneMemoryChunksForSource,
 } from '@second-brain/db';
+import { Readable } from 'node:stream';
 import { UploadController } from './upload.controller';
 
 jest.mock('@second-brain/ai', () => ({
@@ -20,12 +21,14 @@ jest.mock('@second-brain/db', () => ({
   deleteMemoryChunksForSource: jest.fn(),
   insertMemoryChunks: jest.fn(),
   pruneMemoryChunksForSource: jest.fn(),
+  markMemorySourcesChanged: jest.fn().mockResolvedValue(1n),
 }));
 
 describe('UploadController', () => {
   const storageService = {
     uploadFile: jest.fn(),
     downloadFile: jest.fn(),
+    streamFile: jest.fn(),
     deleteFile: jest.fn(),
   };
   const prisma = {
@@ -111,7 +114,12 @@ describe('UploadController', () => {
       storage_path: 'attachments/user-1/recording.mp3',
       file_type: 'audio/mpeg',
     });
-    storageService.downloadFile.mockResolvedValue(Buffer.from('mp3-bytes'));
+    storageService.streamFile.mockResolvedValue({
+      stream: Readable.from(Buffer.from('mp3-bytes')),
+      statusCode: 200,
+      contentLength: '9',
+      contentRange: null,
+    });
     const response = { set: jest.fn() };
 
     const result = await controller.downloadAttachment(
@@ -127,15 +135,49 @@ describe('UploadController', () => {
       },
       select: { storage_path: true, file_type: true },
     });
-    expect(storageService.downloadFile).toHaveBeenCalledWith(
+    expect(storageService.streamFile).toHaveBeenCalledWith(
       'attachments-bucket',
       'attachments/user-1/recording.mp3',
+      undefined,
     );
     expect(response.set).toHaveBeenCalledWith(
       expect.objectContaining({
+        'Accept-Ranges': 'bytes',
         'Content-Disposition': 'inline; filename="recording.mp3"',
         'Content-Length': '9',
         'Content-Type': 'audio/mpeg',
+      }),
+    );
+    expect(result).toBeInstanceOf(StreamableFile);
+  });
+
+  it('returns a partial audio response for a valid byte range', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+    prisma.attachment.findFirst.mockResolvedValue({
+      storage_path: 'attachments/user-1/recording.mp3',
+      file_type: 'audio/mpeg',
+    });
+    storageService.streamFile.mockResolvedValue({
+      stream: Readable.from(Buffer.from('2345')),
+      statusCode: 206,
+      contentLength: '4',
+      contentRange: 'bytes 2-5/10',
+    });
+    const response = { set: jest.fn(), status: jest.fn() };
+
+    const result = await controller.downloadAttachment(
+      { user: { userId: 'supabase-user-1' } },
+      'attachment-audio-1',
+      response as any,
+      'bytes=2-5',
+    );
+
+    expect(response.status).toHaveBeenCalledWith(206);
+    expect(response.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        'Accept-Ranges': 'bytes',
+        'Content-Length': '4',
+        'Content-Range': 'bytes 2-5/10',
       }),
     );
     expect(result).toBeInstanceOf(StreamableFile);
@@ -444,7 +486,12 @@ describe('UploadController', () => {
 
     expect(prisma.attachment.update).toHaveBeenCalledWith({
       where: { id: 'attachment-fallback' },
-      data: { extracted_text: null },
+      data: {
+        extracted_text: null,
+        extraction_status: 'pending',
+        extraction_completeness: null,
+        extraction_error: null,
+      },
     });
     expect(deleteMemoryChunksForSource).toHaveBeenCalledWith(prisma, {
       userId: 'user-1',

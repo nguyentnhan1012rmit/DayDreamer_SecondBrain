@@ -1,6 +1,11 @@
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { DriveService } from './drive.service';
 
+jest.mock('@second-brain/db', () => ({
+  ...jest.requireActual('@second-brain/db'),
+  markMemorySourcesChanged: jest.fn().mockResolvedValue(1n),
+}));
+
 const mockDriveFilesList = jest.fn();
 
 jest.mock('googleapis', () => ({
@@ -49,6 +54,7 @@ describe('DriveService', () => {
     process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
     process.env.GOOGLE_TOKEN_ENCRYPTION_KEY = 'test-token-encryption-key';
     delete process.env.GOOGLE_STORE_RAW_PAYLOADS;
+    prisma.googleDriveFile.findMany.mockResolvedValue([]);
     service = new DriveService(prisma as any);
   });
 
@@ -181,6 +187,36 @@ describe('DriveService', () => {
     await expect(service.syncGoogleDriveFiles('supabase-user-1')).rejects.toBeInstanceOf(
       ForbiddenException,
     );
+  });
+
+  it('does not re-index a Drive file when its content hash is unchanged', async () => {
+    const rawFile = {
+      id: 'drive-file-1',
+      name: 'Stable.txt',
+      mimeType: 'text/plain',
+      size: '12',
+      modifiedTime: '2026-07-23T10:00:00.000Z',
+    };
+    const normalized = (service as any).normalizeFile(rawFile);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      google_access_token: null,
+      google_refresh_token: 'refresh-token',
+    });
+    mockDriveFilesList.mockResolvedValue({ data: { files: [rawFile] } });
+    prisma.googleDriveFile.findMany.mockResolvedValue([{
+      id: 'db-file-1',
+      external_id: rawFile.id,
+      content_hash: normalized.content_hash,
+      modified_time: new Date(rawFile.modifiedTime),
+      mime_type: rawFile.mimeType,
+    }]);
+
+    const result = await service.syncGoogleDriveFiles('supabase-user-1');
+
+    expect(prisma.googleDriveFile.upsert).not.toHaveBeenCalled();
+    expect(prisma.indexingOutbox.upsert).not.toHaveBeenCalled();
+    expect(result.queuedIndexingJobs).toBe(0);
   });
 
   it('returns only Drive files owned by the authenticated user', async () => {

@@ -1,6 +1,11 @@
 import { NotFoundException } from '@nestjs/common';
 import { ContactsService } from './contacts.service';
 
+jest.mock('@second-brain/db', () => ({
+  ...jest.requireActual('@second-brain/db'),
+  markMemorySourcesChanged: jest.fn().mockResolvedValue(1n),
+}));
+
 const mockPeopleConnectionsList = jest.fn();
 
 jest.mock('googleapis', () => ({

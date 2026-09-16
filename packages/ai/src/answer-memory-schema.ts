@@ -29,7 +29,8 @@ export const TuturuuuGroundedAnswerResponseSchema = {
     answer: { type: "string" },
     confidence: {
       type: "string",
-      description: "One of high, medium, low.",
+      enum: ["high", "medium", "low"],
+      description: "Grounding confidence based on the supplied sources.",
     },
     citations: {
       type: "array",
@@ -38,6 +39,7 @@ export const TuturuuuGroundedAnswerResponseSchema = {
         properties: {
           marker: {
             type: "string",
+            pattern: "^S[0-9]+$",
             description: "Citation marker matching S1, S2, S3, etc.",
           },
           claim: {

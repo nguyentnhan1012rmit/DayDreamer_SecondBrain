@@ -131,7 +131,10 @@ export function isAnswerGroundedByCitations(
 
     return (
       conciseTranslatedAnswer ||
-      (hits >= 2 && groundingHits >= 3 && groundingCoverage >= 0.2)
+      (
+        groundingHits >= 3 &&
+        translatedAnswerClausesAreGrounded(answer, citedEvidence)
+      )
     );
   }
 
@@ -141,11 +144,12 @@ export function isAnswerGroundedByCitations(
 export function answerPassesEvidenceChecks(
   answer: string,
   citations: MemoryCitation[],
+  supportingSources: MemoryCitation[] = citations,
 ): boolean {
   if (isIncompleteGeneratedAnswer(answer)) return false;
   if (isInsufficientAnswer(answer)) return true;
 
-  const evidenceText = citations
+  const evidenceText = supportingSources
     .map((citation) => `${citation.claim ?? ""} ${citation.quote} ${citation.sourceTitle ?? ""} ${citation.occurredAt}`)
     .join(" ");
   const normalizedEvidence = normalizeForIntent(evidenceText);
@@ -229,6 +233,7 @@ function dateTokenSupportedByEvidence(token: string, normalizedEvidence: string)
     const monthNumber = String(month + 1).padStart(2, "0");
     if (normalizedEvidence.includes(`-${monthNumber}-`)) return true;
     if (normalizedEvidence.includes(`/${monthNumber}/`)) return true;
+    if (monthEvidenceAliases(month).some((alias) => normalizedEvidence.includes(alias))) return true;
   }
 
   const numeric = normalizedToken.match(/\b(\d{1,2})[\/.-](\d{1,2})(?:[\/.-]((?:20)?\d{2}))?\b/u);
@@ -237,9 +242,25 @@ function dateTokenSupportedByEvidence(token: string, normalizedEvidence: string)
     const monthNumber = String(Number(numeric[2])).padStart(2, "0");
     if (normalizedEvidence.includes(`-${monthNumber}-${day}`)) return true;
     if (normalizedEvidence.includes(`${day}/${monthNumber}`)) return true;
+    const monthIndex = Number(monthNumber) - 1;
+    const numericDay = String(Number(day));
+    if (monthEvidenceAliases(monthIndex).some((alias) =>
+      normalizedEvidence.includes(`${alias} ${numericDay}`) ||
+      normalizedEvidence.includes(`${numericDay} ${alias}`) ||
+      normalizedEvidence.includes(`ngay ${numericDay} thang ${Number(monthNumber)}`)
+    )) return true;
   }
 
   return false;
+}
+
+function monthEvidenceAliases(monthIndex: number) {
+  const englishMonths = [
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+  ];
+  const english = englishMonths[monthIndex];
+  return english ? [english, `thang ${monthIndex + 1}`] : [];
 }
 
 function extractDateLikeTokens(value: string): string[] {
@@ -276,14 +297,18 @@ function extractNamedEntityTokens(value: string): string[] {
     "Of", "As", "If", "When", "While", "After", "Before", "Since", "Until",
     "Also", "However", "Therefore", "Moreover", "Furthermore", "Nevertheless",
     "Additionally", "Meanwhile", "Otherwise", "Consequently", "Subsequently",
+    "Recently", "Separately",
     "Based", "According", "Overall", "Specifically", "Generally", "Typically",
     "Note", "Key", "Main", "Important", "Several", "Various", "Both",
     "First", "Second", "Third", "Next", "Last", "Finally",
     "New", "Other", "More", "Most", "Such", "One", "Two", "Three",
     // Vietnamese common words
     "Mình", "Bạn", "Tôi", "Chúng",
-    "Dựa", "Dựa Trên", "Vào", "Trong", "Nhóm", "Theo",
+    "Dựa", "Dựa Trên", "Vào", "Trong", "Ngày", "Tháng", "Tuần", "Năm", "Nhóm", "Theo",
     "Quyết", "Quyết Định", "Kế Hoạch", "Tóm Tắt",
+    "Công", "Công Việc", "Công Việc Chính", "Tiến Độ",
+    "Sự Kiện", "Sự Kiện Chính", "Chủ Đề", "Chủ Đề Lặp Lại",
+    "Blockers", "Blockers Rủi Ro", "Rủi Ro", "Next", "Next Steps",
     "Với", "Của", "Cho", "Từ", "Về", "Như", "Và", "Hoặc",
     "Đây", "Đó", "Này", "Khi", "Nếu", "Sau", "Trước",
     "Cũng", "Ngoài", "Tuy", "Nhưng", "Vì", "Nên",
@@ -353,6 +378,8 @@ const crossLanguageGroundingConcepts = [
   ["calendar", "google calendar", "lich", "su kien", "event", "events", "meeting", "meetings", "cuoc hop"],
   ["citation", "citations", "cite", "source", "sources", "trich dan", "nguon"],
   ["decision", "decided", "quyet dinh", "thong nhat"],
+  ["database", "databases", "co so du lieu"],
+  ["daily", "every day", "hang ngay", "hằng ngày"],
   ["diary", "journal", "memory", "memories", "nhat ky", "ky uc"],
   ["feedback", "comment", "comments", "review", "gop y", "nhan xet", "phan hoi"],
   ["fix", "fixed", "fixing", "repair", "sua", "sua loi", "khac phuc"],
@@ -363,10 +390,20 @@ const crossLanguageGroundingConcepts = [
   ["search", "semantic search", "retrieval", "tim kiem"],
   ["stress", "stressed", "anxious", "pressure", "cang thang", "lo lang", "ap luc"],
   ["summary", "summaries", "summarize", "tom tat"],
+  ["sync", "synced", "synchronize", "synchronized", "dong bo", "đồng bộ"],
   ["task", "todo", "action item", "viec", "nhiem vu", "can lam"],
   ["trust", "trusted", "reliable", "tin tuong", "dang tin"],
   ["ui", "ux", "interface", "giao dien"],
   ["worker", "outbox", "pipeline", "heartbeat"],
+  ["work", "worked", "working", "cong viec", "lam viec", "thuc hien"],
+  ["project", "projects", "capstone project", "du an", "bai tap lon"],
+  ["home", "at home", "o nha"],
+  ["meet", "met", "meeting", "gap", "cuoc gap"],
+  ["sleep", "slept", "sleeping", "ngu", "di ngu"],
+  ["complete", "completed", "finished", "hoan thanh"],
+  ["progress", "tien do"],
+  ["weekly", "every week", "hang tuan", "hằng tuần"],
+  ["blocker", "blockers", "risk", "risks", "rui ro"],
 ] as const;
 
 function groundingTokens(value: string): string[] {
@@ -381,6 +418,30 @@ function groundingTokens(value: string): string[] {
   }
 
   return [...tokens];
+}
+
+function translatedAnswerClausesAreGrounded(
+  answer: string,
+  citedEvidence: string,
+): boolean {
+  const evidenceTokens = new Set(groundingTokens(citedEvidence));
+  const clauses = answer
+    .split(
+      /(?:[.!?…。！？;]\s+|\n+|,\s+(?:and|but|và|va|nhưng|nhung|đồng thời|dong thoi|ngoài ra|ngoai ra)\s+)/giu,
+    )
+    .map((clause) => clause.replace(/^\s*[-*•]\s*/u, "").trim())
+    .filter(Boolean);
+
+  return clauses.every((clause) => {
+    const clauseTokens = importantTokens(clause);
+    if (clauseTokens.length < 4) return true;
+
+    const groundingAnchors = groundingTokens(clause).filter((token) =>
+      evidenceTokens.has(token),
+    ).length;
+    const requiredAnchors = clauseTokens.length >= 7 ? 2 : 1;
+    return groundingAnchors >= requiredAnchors;
+  });
 }
 
 function quoteContainsMeaningfulPhrase(value: string, quote: string): boolean {

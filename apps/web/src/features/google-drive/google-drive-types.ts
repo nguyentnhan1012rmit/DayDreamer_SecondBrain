@@ -1,6 +1,6 @@
 export type DriveConnectionStatus = {
-  source?: 'drive';
-  oauthMode?: 'all_google_sources' | 'source_scoped';
+  source?: "drive";
+  oauthMode?: "all_google_sources" | "source_scoped";
   connected: boolean;
   scopes?: string[];
   requestedScopes?: string[];
@@ -32,10 +32,10 @@ export type DriveSyncResult = {
   syncedCount: number;
   requestedCount?: number;
   queuedIndexingJobs?: number;
-  memoryIndexingStatus?: 'queued' | 'succeeded' | 'failed';
+  memoryIndexingStatus?: "queued" | "succeeded" | "failed";
 };
 
 export type DriveFeedback = {
-  type: 'success' | 'error';
+  type: "success" | "error";
   text: string;
 };

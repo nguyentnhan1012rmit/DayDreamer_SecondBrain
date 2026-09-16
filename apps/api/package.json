@@ -30,6 +30,7 @@
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@second-brain/ai": "workspace:*",
+    "@second-brain/db": "workspace:*",
     "@second-brain/shared": "workspace:*",
     "@sentry/nestjs": "^10.69.0",
     "@supabase/supabase-js": "^2.108.1",

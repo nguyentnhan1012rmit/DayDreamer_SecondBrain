@@ -41,6 +41,14 @@ export interface QueryAnalytics {
     retrieveMs: number;
     generateMs: number;
     totalMs: number;
+    preRetrieveMs?: number;
+    rerankMs?: number;
+    firstResultMs?: number;
+    fullAnswerMs?: number;
+  };
+  embeddingCache?: {
+    status: "cold" | "warm" | "unknown" | "skipped";
+    layer: "redis" | "remote" | "local" | "in_flight" | "unknown" | "none";
   };
   chunksRetrieved: number;
   status: "success" | "no_memory" | "error";
@@ -129,6 +137,11 @@ export interface AnswerMemoryOptions {
   timeZone?: string;
   embeddingProvider?: {
     embedQuery(text: string): Promise<number[]>;
+    embedQueryWithMetadata?(text: string): Promise<{
+      embedding: number[];
+      cacheStatus: "cold" | "warm" | "unknown";
+      cacheLayer: "redis" | "remote" | "local" | "in_flight" | "unknown";
+    }>;
   };
   generateAnswer?: typeof generateTuturuuuJsonWithMeta<GroundedAnswer>;
   generateTranslation?: FastTranslationGenerator;

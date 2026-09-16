@@ -92,6 +92,7 @@ export {
   createDefaultEmbeddingProvider,
   getEmbeddingProviderName,
   type AdvancedEmbeddingProvider,
+  type QueryEmbeddingResult,
 } from "./embedding.ts";
 export type {
   ChunkedMemoryChunk,
@@ -118,15 +119,13 @@ export {
   requireTuturuuuApiKey,
   type TuturuuuGenerateTextOptions,
   type TuturuuuGenerateTextResult,
+  type TuturuuuJsonSchema,
   type TuturuuuEmbeddingOptions,
   type TuturuuuEmbeddingResult,
   type TuturuuuResponseInput,
   type TuturuuuTokenUsage,
 } from "./tuturuuu-client.ts";
-export {
-  generateAiText,
-  type GenerateAiTextOptions,
-} from "./ai-text.ts";
+export { generateAiText, type GenerateAiTextOptions } from "./ai-text.ts";
 export {
   formatSummaryDateTime,
   formatSummaryPeriodRange,
@@ -136,6 +135,15 @@ export {
   type SummaryPeriod,
   type SummaryPeriodType,
 } from "./summary-period.ts";
+export {
+  SummaryGenerationEngine,
+  buildSummaryPrompt,
+  sanitizeSummaryContent,
+  type SummaryActivity,
+  type SummaryEngineRecord,
+  type SummaryEngineResult,
+  type SummaryEngineStore,
+} from "./summary-engine.ts";
 export {
   DEFAULT_TUTURUUU_ANSWER_MODEL,
   DEFAULT_TUTURUUU_CHUNK_MODEL,

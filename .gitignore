@@ -33,6 +33,7 @@ pnpm-cache/
 output/
 tmp/
 pnpm_tmp/
+.artifacts/
 
 # npm lockfiles in pnpm workspace
 **/package-lock.json

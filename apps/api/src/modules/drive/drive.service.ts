@@ -6,7 +6,9 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { drive_v3, google } from 'googleapis';
+import { markMemorySourcesChanged } from '@second-brain/db';
 import { invalidateUserSearchCache } from '../../common/cache/search-answer-cache';
+import { contentHash, mapWithConcurrency } from '../../common/google/google-sync-utils';
 import { PrismaService } from '../../prisma/prisma.service';
 import { decryptOAuthToken, encryptOAuthToken } from '../calendar/oauth-token-crypto';
 import {
@@ -27,6 +29,7 @@ type GoogleDriveFileRow = {
   thumbnail_link: string | null;
   size: bigint | null;
   modified_time: Date | null;
+  content_hash: string;
   raw_json: drive_v3.Schema$File | null;
 };
 
@@ -140,6 +143,11 @@ export class DriveService {
         size: true,
         modified_time: true,
         extracted_text: true,
+        extraction_status: true,
+        extraction_completeness: true,
+        extraction_error: true,
+        extraction_attempts: true,
+        extraction_updated_at: true,
         created_at: true,
         updated_at: true,
       },
@@ -148,7 +156,7 @@ export class DriveService {
     });
   }
 
-  async listImportCandidates(supabaseId: string, options: { limit?: number; query?: string } = {}) {
+  async listImportCandidates(supabaseId: string, options: { limit?: number; query?: string; pageToken?: string } = {}) {
     const { user, drive } = await this.getDriveClientContext(supabaseId);
     const maxFiles = Math.min(Math.max(options.limit ?? 25, 1), 100);
 
@@ -160,6 +168,7 @@ export class DriveService {
         fields: `nextPageToken, files(${this.getDriveFileFields()})`,
         supportsAllDrives: true,
         includeItemsFromAllDrives: true,
+        pageToken: options.pageToken,
       });
       const files = response.data.files ?? [];
       const externalIds = files.map((file) => file.id).filter((id): id is string => Boolean(id));
@@ -177,6 +186,7 @@ export class DriveService {
       return {
         message: 'Google Drive import candidates fetched successfully.',
         count: files.length,
+        nextPageToken: response.data.nextPageToken ?? null,
         candidates: files
           .filter((file) => file.id && file.name && file.mimeType)
           .map((file) => ({
@@ -206,16 +216,14 @@ export class DriveService {
     const selectedIds = this.normalizeSelectedIds(fileIds, 50);
 
     try {
-      const normalizedFiles: GoogleDriveFileRow[] = [];
-      for (const fileId of selectedIds) {
+      const normalizedFiles = (await mapWithConcurrency(selectedIds, async (fileId) => {
         const response = await drive.files.get({
           fileId,
           fields: this.getDriveFileFields(),
           supportsAllDrives: true,
         });
-        const normalized = this.normalizeFile(response.data);
-        if (normalized) normalizedFiles.push(normalized);
-      }
+        return this.normalizeFile(response.data);
+      })).filter((file): file is GoogleDriveFileRow => Boolean(file));
 
       const queuedIndexingJobs = await this.saveFilesAndQueueIndexing(user.id, normalizedFiles);
       await recordGoogleSyncSuccess(this.prisma, { userId: user.id, source: 'drive' });
@@ -239,19 +247,26 @@ export class DriveService {
 
   async syncGoogleDriveFiles(supabaseId: string, options: { limit?: number } = {}) {
     const { user, drive } = await this.getDriveClientContext(supabaseId);
-    const maxFiles = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const pageSize = Math.min(Math.max(options.limit ?? 50, 1), 1000);
 
     try {
-      const response = await drive.files.list({
-        q: this.buildDriveListQuery(),
-        pageSize: maxFiles,
-        orderBy: 'modifiedTime desc',
-        fields: `nextPageToken, files(${this.getDriveFileFields()})`,
-        supportsAllDrives: true,
-        includeItemsFromAllDrives: true,
-      });
+      const files: drive_v3.Schema$File[] = [];
+      let pageToken: string | undefined;
+      do {
+        const response = await drive.files.list({
+          q: this.buildDriveListQuery(),
+          pageSize,
+          orderBy: 'modifiedTime desc',
+          fields: `nextPageToken, files(${this.getDriveFileFields()})`,
+          supportsAllDrives: true,
+          includeItemsFromAllDrives: true,
+          pageToken,
+        });
+        files.push(...(response.data.files ?? []));
+        pageToken = response.data.nextPageToken ?? undefined;
+      } while (pageToken);
 
-      const normalizedFiles = (response.data.files ?? [])
+      const normalizedFiles = files
         .map((file) => this.normalizeFile(file))
         .filter((file): file is GoogleDriveFileRow => Boolean(file));
 
@@ -297,7 +312,7 @@ export class DriveService {
   }
 
   private getDriveFileFields() {
-    return 'id, name, mimeType, webViewLink, iconLink, thumbnailLink, size, modifiedTime, owners(displayName,emailAddress), lastModifyingUser(displayName,emailAddress)';
+    return 'id, name, mimeType, webViewLink, iconLink, thumbnailLink, size, modifiedTime, md5Checksum, version, owners(displayName,emailAddress), lastModifyingUser(displayName,emailAddress)';
   }
 
   private buildDriveListQuery(query?: string) {
@@ -318,10 +333,25 @@ export class DriveService {
   }
 
   private async saveFilesAndQueueIndexing(userId: string, files: GoogleDriveFileRow[]) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       let queuedCount = 0;
+      const existing = (files.length
+        ? await tx.googleDriveFile.findMany({
+            where: { user_id: userId, external_id: { in: files.map((file) => file.external_id) } },
+            select: { id: true, external_id: true, content_hash: true, modified_time: true, mime_type: true },
+          })
+        : []) ?? [];
+      const existingByExternalId = new Map(existing.map((file) => [file.external_id, file]));
+      const changedFiles = files.filter((file) => {
+        const saved = existingByExternalId.get(file.external_id);
+        return !saved || saved.content_hash !== file.content_hash || saved.modified_time?.getTime() !== file.modified_time?.getTime();
+      });
 
-      for (const file of files) {
+      for (const file of changedFiles) {
+        const previous = existingByExternalId.get(file.external_id);
+        const requiresExtraction = !previous ||
+          previous.modified_time?.getTime() !== file.modified_time?.getTime() ||
+          previous.mime_type !== file.mime_type;
         const savedFile = await tx.googleDriveFile.upsert({
           where: {
             user_id_external_id: {
@@ -337,6 +367,13 @@ export class DriveService {
             thumbnail_link: file.thumbnail_link,
             size: file.size,
             modified_time: file.modified_time,
+            content_hash: file.content_hash,
+            ...(requiresExtraction && {
+              extracted_text: null,
+              extraction_status: 'pending',
+              extraction_completeness: null,
+              extraction_error: null,
+            }),
             raw_json: file.raw_json as any,
           },
           create: {
@@ -349,6 +386,8 @@ export class DriveService {
             thumbnail_link: file.thumbnail_link,
             size: file.size,
             modified_time: file.modified_time,
+            content_hash: file.content_hash,
+            extraction_status: 'pending',
             raw_json: file.raw_json as any,
           },
         });
@@ -363,14 +402,28 @@ export class DriveService {
         queuedCount += 1;
       }
 
+      if (changedFiles.length) {
+        const modified = changedFiles
+          .map((file) => file.modified_time?.getTime())
+          .filter((value): value is number => Number.isFinite(value));
+        await markMemorySourcesChanged(tx as any, {
+          userId,
+          occurredFrom: modified.length ? new Date(Math.min(...modified)) : null,
+          occurredTo: modified.length ? new Date(Math.max(...modified)) : null,
+        });
+        await this.expireSearchHistory(tx, userId);
+      }
+
       return queuedCount;
     });
+    if (result > 0) await invalidateUserSearchCache(userId);
+    return result;
   }
 
   private normalizeFile(file: drive_v3.Schema$File): GoogleDriveFileRow | null {
     if (!file.id || !file.name || !file.mimeType) return null;
 
-    return {
+    const normalized = {
       external_id: file.id,
       name: file.name,
       mime_type: file.mimeType,
@@ -380,6 +433,18 @@ export class DriveService {
       size: file.size ? BigInt(file.size) : null,
       modified_time: file.modifiedTime ? new Date(file.modifiedTime) : null,
       raw_json: shouldStoreGoogleRawPayloads() ? file : null,
+    };
+    return {
+      ...normalized,
+      content_hash: contentHash({
+        externalId: normalized.external_id,
+        name: normalized.name,
+        mimeType: normalized.mime_type,
+        size: normalized.size?.toString() ?? null,
+        modifiedTime: normalized.modified_time?.toISOString() ?? null,
+        md5Checksum: file.md5Checksum ?? null,
+        version: file.version ?? null,
+      }),
     };
   }
 
@@ -419,6 +484,7 @@ export class DriveService {
           sourceTitle: input.fileName,
           mimeType: input.mimeType,
         },
+        generation: { increment: 1 },
         run_after: new Date(),
         locked_at: null,
         locked_by: null,
@@ -438,11 +504,10 @@ export class DriveService {
       },
     });
 
-    await this.expireSearchCache(tx, input.userId);
     return job;
   }
 
-  private async expireSearchCache(tx: any, userId: string) {
+  private async expireSearchHistory(tx: any, userId: string) {
     await tx.searchHistory?.updateMany?.({
       where: {
         user_id: userId,
@@ -450,7 +515,6 @@ export class DriveService {
       },
       data: { expires_at: new Date() },
     });
-    await invalidateUserSearchCache(userId);
   }
 
   private isInsufficientScopeError(error: unknown) {

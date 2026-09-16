@@ -6,6 +6,8 @@ import { Pool } from "pg";
 import { toVectorLiteral } from "./src/vector.js";
 
 export * from "./src/search-history.js";
+export * from "./src/advisory-lock.js";
+export * from "./src/memory-state.js";
 export { toVectorLiteral } from "./src/vector.js";
 const { Prisma, PrismaClient } = PrismaPackage;
 
@@ -14,10 +16,8 @@ export type PrismaExecutorLike = Pick<
   "$executeRawUnsafe" | "$queryRawUnsafe" | "$queryRaw"
 >;
 
-export type PrismaClientLike = PrismaExecutorLike & Pick<
-  PrismaClientPackage,
-  "$disconnect" | "$transaction"
->;
+export type PrismaClientLike = PrismaExecutorLike &
+  Pick<PrismaClientPackage, "$disconnect" | "$transaction">;
 
 export interface PersistMemoryChunkInput {
   userId: string;
@@ -56,25 +56,30 @@ function getDefaultPrismaClient(): PrismaClientPackage {
 
 export async function insertMemoryChunk(
   prismaOrInput: PrismaExecutorLike | PersistMemoryChunkInput,
-  maybeInput?: PersistMemoryChunkInput
+  maybeInput?: PersistMemoryChunkInput,
 ): Promise<void> {
   const prisma = maybeInput
     ? (prismaOrInput as PrismaExecutorLike)
     : getDefaultPrismaClient();
   const input = maybeInput ?? (prismaOrInput as PersistMemoryChunkInput);
   const metadataRecord =
-    input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata)
+    input.metadata &&
+    typeof input.metadata === "object" &&
+    !Array.isArray(input.metadata)
       ? (input.metadata as Record<string, unknown>)
       : {};
   const chunkIndex =
     input.chunkIndex ??
-    (typeof metadataRecord.chunkIndex === "number" ? metadataRecord.chunkIndex : 0);
+    (typeof metadataRecord.chunkIndex === "number"
+      ? metadataRecord.chunkIndex
+      : 0);
   const occurredAt =
     input.occurredAt == null ? new Date() : new Date(input.occurredAt);
   const metadataJson = JSON.stringify(
     normalizeMemoryMetadata(input.metadata, occurredAt),
   );
-  const embeddingLiteral = input.embedding == null ? null : toVectorLiteral(input.embedding);
+  const embeddingLiteral =
+    input.embedding == null ? null : toVectorLiteral(input.embedding);
 
   await prisma.$executeRawUnsafe(
     `
@@ -126,13 +131,13 @@ export async function insertMemoryChunk(
     input.evidence ?? null,
     metadataJson,
     occurredAt,
-    embeddingLiteral
+    embeddingLiteral,
   );
 }
 
 export async function insertMemoryChunks(
   prismaOrInputs: PrismaExecutorLike | PersistMemoryChunkInput[],
-  maybeInputs?: PersistMemoryChunkInput[]
+  maybeInputs?: PersistMemoryChunkInput[],
 ): Promise<void> {
   const prisma = maybeInputs
     ? (prismaOrInputs as PrismaExecutorLike)
@@ -175,7 +180,7 @@ export interface PruneMemoryChunksInput extends MemorySourceRef {
 
 export async function deleteMemoryChunksForSource(
   prismaOrRef: PrismaExecutorLike | MemorySourceRef,
-  maybeRef?: MemorySourceRef
+  maybeRef?: MemorySourceRef,
 ): Promise<void> {
   const prisma = maybeRef
     ? (prismaOrRef as PrismaExecutorLike)
@@ -191,13 +196,13 @@ export async function deleteMemoryChunksForSource(
     `,
     ref.userId,
     ref.sourceType,
-    ref.sourceId
+    ref.sourceId,
   );
 }
 
 export async function pruneMemoryChunksForSource(
   prismaOrInput: PrismaExecutorLike | PruneMemoryChunksInput,
-  maybeInput?: PruneMemoryChunksInput
+  maybeInput?: PruneMemoryChunksInput,
 ): Promise<void> {
   const prisma = maybeInput
     ? (prismaOrInput as PrismaExecutorLike)
@@ -215,7 +220,7 @@ export async function pruneMemoryChunksForSource(
     input.userId,
     input.sourceType,
     input.sourceId,
-    Math.max(0, input.keepChunkCount)
+    Math.max(0, input.keepChunkCount),
   );
 }
 
@@ -319,7 +324,7 @@ interface RawChunkRow {
 export async function vectorSearch(
   prisma: PrismaExecutorLike,
   queryEmbedding: number[],
-  options: VectorSearchOptions
+  options: VectorSearchOptions,
 ): Promise<VectorSearchResult[]> {
   const {
     userId,
@@ -395,10 +400,9 @@ export async function vectorSearch(
     LIMIT ${limitParam}
   `;
 
-  const rows = await (prisma.$queryRawUnsafe as (...args: unknown[]) => Promise<RawChunkRow[]>)(
-    sql,
-    ...params
-  );
+  const rows = await (
+    prisma.$queryRawUnsafe as (...args: unknown[]) => Promise<RawChunkRow[]>
+  )(sql, ...params);
 
   return rows.map((row) => ({
     id: row.id,
@@ -413,8 +417,14 @@ export async function vectorSearch(
       typeof row.metadata === "string"
         ? (JSON.parse(row.metadata) as Record<string, unknown>)
         : (row.metadata ?? {}),
-    occurredAt: row.occurred_at instanceof Date ? row.occurred_at : new Date(row.occurred_at),
-    createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    occurredAt:
+      row.occurred_at instanceof Date
+        ? row.occurred_at
+        : new Date(row.occurred_at),
+    createdAt:
+      row.created_at instanceof Date
+        ? row.created_at
+        : new Date(row.created_at),
     similarity: Number(row.similarity),
   }));
 }
@@ -470,7 +480,8 @@ export async function insertEntityMentions(
       mention.chunkId,
       mention.entityType,
       mention.entityValue,
-      mention.entityValueNormalized ?? normalizeEntityValue(mention.entityValue),
+      mention.entityValueNormalized ??
+        normalizeEntityValue(mention.entityValue),
     );
   }
 }
@@ -519,15 +530,23 @@ export async function deleteEntityMentionsForSource(
  * Returns a map of chunkIndex → chunkId (UUID).
  */
 export async function resolveMemoryChunkIds(
-  prismaOrArgs: PrismaExecutorLike | { userId: string; sourceType: string; sourceId: string },
+  prismaOrArgs:
+    | PrismaExecutorLike
+    | { userId: string; sourceType: string; sourceId: string },
   maybeArgs?: { userId: string; sourceType: string; sourceId: string },
 ): Promise<Map<number, string>> {
   const prisma = maybeArgs
     ? (prismaOrArgs as PrismaExecutorLike)
     : getDefaultPrismaClient();
-  const args = maybeArgs ?? (prismaOrArgs as { userId: string; sourceType: string; sourceId: string });
+  const args =
+    maybeArgs ??
+    (prismaOrArgs as { userId: string; sourceType: string; sourceId: string });
 
-  const rows = await (prisma.$queryRawUnsafe as (...a: unknown[]) => Promise<{ id: string; chunk_index: number }[]>)(
+  const rows = await (
+    prisma.$queryRawUnsafe as (
+      ...a: unknown[]
+    ) => Promise<{ id: string; chunk_index: number }[]>
+  )(
     `
       SELECT "id", "chunk_index"
       FROM "memory_chunks"

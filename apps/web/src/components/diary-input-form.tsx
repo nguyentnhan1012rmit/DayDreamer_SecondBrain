@@ -1,115 +1,32 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  ArrowRight,
-  Camera,
-  Check,
-  FileUp,
-  LockKeyhole,
-  Mic,
-  Paperclip,
-  PencilLine,
-  Sparkles,
-  Square,
-  Trash2,
-  X,
-} from "lucide-react";
-import {
-  AUDIO_ATTACHMENT_MAX_BYTES,
-  isAudioAttachmentMimeType,
-  STANDARD_ATTACHMENT_MAX_BYTES,
-} from "@second-brain/shared";
+import { Camera, Check, FileUp, LockKeyhole, Paperclip } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { readHomeDraft, storeHomeDraft } from "@/lib/home-draft";
+import { copilotDiaryText } from "@/lib/api/diary-api";
 import {
-  clearHomeDraft,
-  readHomeDraft,
-  storeHomeDraft,
-} from "@/lib/home-draft";
-import { MOOD_OPTIONS } from "@/lib/mood-meta";
-import {
-  createDiaryEntry,
-  copilotDiaryText,
   getCalendarEvents,
-  processDiaryAttachment,
-  uploadDiaryAttachment,
-  type AttachmentUploadResponse,
   type CalendarEventRecord,
-  type CreateDiaryPayload,
-  type DiaryMood,
-} from "@/lib/api-client";
-
-type DiaryDraft = {
-  title: string;
-  content: string;
-  entryDate: string;
-  mood: DiaryMood;
-  tags: string[];
-};
-
-type SaveState = "idle" | "saving" | "success" | "error";
-type CaptureMode = "write" | "record" | "photo" | "file";
-type AttachmentStatus =
-  | "queued"
-  | "uploading"
-  | "extracting"
-  | "indexed"
-  | "pending"
-  | "error";
-
-type AttachmentQueueItem = {
-  id: string;
-  file: File;
-  status: AttachmentStatus;
-  message: string;
-  attachmentId?: string;
-  signedUrl?: string;
-  memoryChunkCount?: number;
-};
-
-type SavedReflection = {
-  entryId: string;
-  entryTitle: string;
-  mood: DiaryMood;
-  question: string;
-};
-
-function isAudioFile(file: Pick<File, "type">) {
-  return isAudioAttachmentMimeType(file.type);
-}
-
-function getLocalDateInputValue(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function getReflectionFallback(mood: DiaryMood) {
-  if (mood === "great") {
-    return "What helped create this energy, and how could you carry it forward?";
-  }
-  if (mood === "good") {
-    return "What made this moment feel steady or meaningful to you?";
-  }
-  if (mood === "bad") {
-    return "What felt heaviest here, and what support would have helped?";
-  }
-  return "What detail from this moment might matter more than it seems right now?";
-}
-
-function normalizeReflectionQuestion(value: string, fallback: string) {
-  const firstLine = value
-    .trim()
-    .split(/\n+/)[0]
-    ?.replace(/^[\s>*#-]+/, "")
-    .replace(/^['\"]|['\"]$/g, "")
-    .trim();
-
-  if (!firstLine) return fallback;
-  const shortened = firstLine.slice(0, 240).trim();
-  return /[?？]$/.test(shortened) ? shortened : `${shortened}?`;
-}
+} from "@/lib/api/calendar-api";
+import { CaptureModeTabs } from "@/features/diary/components/capture-mode-tabs";
+import { MoodPicker } from "@/features/diary/components/mood-picker";
+import { TagInput } from "@/features/diary/components/tag-input";
+import { RecordingPanel } from "@/features/diary/components/recording-panel";
+import { AttachmentQueue } from "@/features/diary/components/attachment-queue";
+import { ReflectDeeper } from "@/features/diary/components/reflect-deeper";
+import { useAttachmentQueue } from "@/features/diary/hooks/use-attachment-queue";
+import { useRecorder } from "@/features/diary/hooks/use-recorder";
+import { useDiarySubmit } from "@/features/diary/hooks/use-diary-submit";
+import {
+  createInitialDiaryDraft,
+  getLocalDateInputValue,
+} from "@/features/diary/diary-utils";
+import type {
+  CaptureMode,
+  DiaryDraft,
+  SavedReflection,
+} from "@/features/diary/types";
 
 function isSameLocalDate(isoDate: string, localDate: string) {
   return getLocalDateInputValue(new Date(isoDate)) === localDate;
@@ -124,54 +41,6 @@ function formatCompactEventTime(event: CalendarEventRecord) {
   });
 
   return `${timeFormat.format(start)}-${timeFormat.format(end)}`;
-}
-
-function getAttachmentStatusClass(status: AttachmentStatus) {
-  if (status === "indexed") {
-    return "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-800";
-  }
-
-  if (status === "error") {
-    return "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:ring-rose-800";
-  }
-
-  if (status === "pending") {
-    return "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-800";
-  }
-
-  if (status === "uploading" || status === "extracting") {
-    return "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:ring-sky-800";
-  }
-
-  return "bg-indigo-50 text-indigo-700 ring-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-300 dark:ring-indigo-800";
-}
-
-const initialDraft: DiaryDraft = {
-  title: "",
-  content: "",
-  entryDate: getLocalDateInputValue(),
-  mood: "neutral",
-  tags: [],
-};
-
-const CAPTURE_MODES = [
-  { value: "write", label: "Write", icon: PencilLine },
-  { value: "record", label: "Record", icon: Mic },
-  { value: "photo", label: "Photo", icon: Camera },
-  { value: "file", label: "File", icon: FileUp },
-] satisfies Array<{
-  value: CaptureMode;
-  label: string;
-  icon: typeof PencilLine;
-}>;
-
-function normalizeTag(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/^#+/, "")
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-_]/g, "");
 }
 
 interface TemplateItem {
@@ -278,37 +147,49 @@ const TEMPLATES_EN: TemplateItem[] = [
 
 export function DiaryInputForm() {
   const { getAccessToken, isAuthenticated } = useAuth();
-  const [draft, setDraft] = useState<DiaryDraft>(initialDraft);
-  const [state, setState] = useState<SaveState>("idle");
-  const [errorMessage, setErrorMessage] = useState<string>("");
+  const [draft, setDraft] = useState<DiaryDraft>(createInitialDiaryDraft);
   const [isCopilotLoading, setIsCopilotLoading] = useState(false);
   const [activeCopilotAction, setActiveCopilotAction] = useState("");
-  const [attachmentItems, setAttachmentItems] = useState<AttachmentQueueItem[]>(
-    [],
-  );
   const [calendarEvents, setCalendarEvents] = useState<CalendarEventRecord[]>(
     [],
   );
   const [isCalendarLoading, setIsCalendarLoading] = useState(false);
-  const [tagInput, setTagInput] = useState("");
   const [captureMode, setCaptureMode] = useState<CaptureMode>("write");
-  const [isRecording, setIsRecording] = useState(false);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [recordingError, setRecordingError] = useState("");
-  const [savedReflection, setSavedReflection] =
-    useState<SavedReflection | null>(null);
-  const [isReflectionLoading, setIsReflectionLoading] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
-  const discardRecordingRef = useRef(false);
+  const attachmentQueue = useAttachmentQueue({ captureMode, setDraft });
+  const recorder = useRecorder({
+    onRecordingReady: (file) => attachmentQueue.queueFiles([file], "record"),
+  });
+  const diarySubmit = useDiarySubmit({
+    draft,
+    attachments: attachmentQueue.items,
+    isRecording: recorder.isRecording,
+    isAuthenticated,
+    getAccessToken,
+    updateAttachment: attachmentQueue.updateItem,
+    resetDraft: () => setDraft(createInitialDiaryDraft()),
+  });
+  const {
+    canSubmit,
+    state,
+    errorMessage,
+    showAuthPrompt,
+    savedReflection,
+    isReflectionLoading,
+    setErrorMessage,
+  } = diarySubmit;
 
   useEffect(() => {
     const homeDraft = readHomeDraft();
     if (!homeDraft) return;
-    setDraft(homeDraft);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setDraft(homeDraft);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -343,24 +224,6 @@ export function DiaryInputForm() {
     };
   }, [getAccessToken, isAuthenticated]);
 
-  useEffect(() => {
-    if (!isRecording) return undefined;
-    const timerId = window.setInterval(
-      () => setRecordingSeconds((current) => current + 1),
-      1000,
-    );
-    return () => window.clearInterval(timerId);
-  }, [isRecording]);
-
-  useEffect(() => {
-    return () => {
-      discardRecordingRef.current = true;
-      const recorder = mediaRecorderRef.current;
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    };
-  }, []);
-
   const activeTemplates = TEMPLATES_EN;
 
   const linkedCalendarEvents = useMemo(() => {
@@ -369,305 +232,19 @@ export function DiaryInputForm() {
       .slice(0, 3);
   }, [calendarEvents, draft.entryDate]);
 
-  const canSubmit = useMemo(() => {
-    const hasAttachment = attachmentItems.some(
-      (item) => item.status !== "error",
-    );
-    return (
-      draft.title.trim().length > 0 &&
-      (draft.content.trim().length > 0 || hasAttachment) &&
-      draft.entryDate.trim().length > 0
-    );
-  }, [attachmentItems, draft]);
-
-  const [showAuthPrompt, setShowAuthPrompt] = useState(false);
-
-  function updateAttachmentItem(
-    id: string,
-    update: Partial<AttachmentQueueItem>,
-  ) {
-    setAttachmentItems((current) =>
-      current.map((item) => (item.id === id ? { ...item, ...update } : item)),
-    );
-  }
-
-  function queueAttachmentFiles(
-    selectedFiles: File[],
-    sourceMode: CaptureMode = captureMode,
-  ) {
-    if (!selectedFiles.length) return;
-
-    setAttachmentItems((current) => [
-      ...current,
-      ...selectedFiles.map((file) => {
-        const audio = isAudioFile(file);
-        const maxBytes = audio
-          ? AUDIO_ATTACHMENT_MAX_BYTES
-          : STANDARD_ATTACHMENT_MAX_BYTES;
-        const tooLarge = file.size > maxBytes;
-
-        return {
-          id: `${file.name}-${file.size}-${file.lastModified}-${crypto.randomUUID()}`,
-          file,
-          status: tooLarge ? ("error" as const) : ("queued" as const),
-          message: tooLarge
-            ? `${audio ? "Audio" : "File"} must be ${maxBytes / (1024 * 1024)} MB or smaller`
-            : audio
-              ? "Ready to upload and transcribe"
-              : "Ready to attach",
-        };
-      }),
-    ]);
-
-    const firstFile = selectedFiles[0];
-    const isAudio = isAudioFile(firstFile);
-    const isImage = firstFile.type.startsWith("image/");
-    const baseName = firstFile.name.replace(/\.[^.]+$/, "").trim();
-    const defaultTitle = isAudio
-      ? "Voice note"
-      : isImage || sourceMode === "photo"
-        ? "Photo memory"
-        : baseName || "File memory";
-    const defaultContent = isAudio
-      ? "Voice note attached."
-      : isImage || sourceMode === "photo"
-        ? "Photo attached."
-        : "File attached.";
-
-    setDraft((current) => ({
-      ...current,
-      title: current.title.trim() ? current.title : defaultTitle,
-      content: current.content.trim() ? current.content : defaultContent,
-    }));
-  }
-
-  function handleAttachmentSelection(
-    event: React.ChangeEvent<HTMLInputElement>,
-  ) {
-    queueAttachmentFiles(Array.from(event.target.files ?? []));
-    event.target.value = "";
-  }
-
-  function formatRecordingTime(seconds: number) {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
-  }
-
-  function stopMediaStream() {
-    mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-    mediaStreamRef.current = null;
-  }
-
-  async function startRecording() {
-    setRecordingError("");
-
-    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      setRecordingError("Audio recording is not supported by this browser.");
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const preferredMimeType = [
-        "audio/webm;codecs=opus",
-        "audio/mp4",
-        "audio/webm",
-      ].find((mimeType) => MediaRecorder.isTypeSupported(mimeType));
-      const recorder = preferredMimeType
-        ? new MediaRecorder(stream, { mimeType: preferredMimeType })
-        : new MediaRecorder(stream);
-
-      mediaStreamRef.current = stream;
-      mediaRecorderRef.current = recorder;
-      recordedChunksRef.current = [];
-      discardRecordingRef.current = false;
-      setRecordingSeconds(0);
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) recordedChunksRef.current.push(event.data);
-      };
-      recorder.onerror = () => {
-        setRecordingError("Recording failed. Please try again.");
-        setIsRecording(false);
-        stopMediaStream();
-      };
-      recorder.onstop = () => {
-        setIsRecording(false);
-        stopMediaStream();
-        if (discardRecordingRef.current || !recordedChunksRef.current.length) {
-          recordedChunksRef.current = [];
-          return;
-        }
-
-        const mimeType = (recorder.mimeType || "audio/webm")
-          .split(";", 1)[0]
-          .toLowerCase();
-        const extension = mimeType.includes("mp4")
-          ? "m4a"
-          : mimeType.includes("ogg")
-            ? "ogg"
-            : mimeType.includes("mpeg")
-              ? "mp3"
-              : "webm";
-        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-        const file = new File(
-          [blob],
-          `voice-note-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`,
-          { type: mimeType },
-        );
-        recordedChunksRef.current = [];
-        queueAttachmentFiles([file], "record");
-      };
-
-      recorder.start(1000);
-      setIsRecording(true);
-    } catch (error) {
-      stopMediaStream();
-      setRecordingError(
-        error instanceof DOMException && error.name === "NotAllowedError"
-          ? "Microphone permission was denied. Allow access and try again."
-          : "Could not start microphone recording.",
-      );
-    }
-  }
-
-  function stopRecording() {
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
-  }
-
-  function discardRecording() {
-    discardRecordingRef.current = true;
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state !== "inactive") recorder.stop();
-    else stopMediaStream();
-    setIsRecording(false);
-    setRecordingSeconds(0);
-  }
-
-  function removeAttachment(id: string) {
-    setAttachmentItems((current) => current.filter((item) => item.id !== id));
-  }
-
-  function addTag(value = tagInput) {
-    const normalized = normalizeTag(value);
-    if (!normalized) return;
-
-    setDraft((prev) => {
-      if (prev.tags.includes(normalized) || prev.tags.length >= 12) return prev;
-      return { ...prev, tags: [...prev.tags, normalized] };
-    });
-    setTagInput("");
-  }
-
-  function removeTag(tag: string) {
-    setDraft((prev) => ({
-      ...prev,
-      tags: prev.tags.filter((item) => item !== tag),
-    }));
-  }
-
-  function handleTagInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter" || event.key === ",") {
-      event.preventDefault();
-      addTag();
-    }
-
-    if (event.key === "Backspace" && !tagInput && draft.tags.length) {
-      setDraft((prev) => ({ ...prev, tags: prev.tags.slice(0, -1) }));
-    }
-  }
-
-  function getAttachmentMessage(response: AttachmentUploadResponse) {
-    if (response.processingError) {
-      return `${response.processingError}. Worker will retry later.`;
-    }
-
-    if (response.extractionStatus === "failed") {
-      return response.attachment.fileType.startsWith("audio/")
-        ? "Audio transcription failed; retry from Timeline"
-        : "AI could not read this file; retry the scan from Timeline";
-    }
-
-    if (response.memoryIndexed) {
-      return `Indexed ${response.memoryChunkCount} memory chunks`;
-    }
-
-    if (response.memoryIndexingStatus === "dead_letter") {
-      return "Indexing failed after retries. Requeue from Settings or upload again.";
-    }
-
-    if (response.memoryIndexingStatus === "retry") {
-      return "Worker hit a temporary error; retry is scheduled automatically.";
-    }
-
-    if (
-      response.memoryIndexingStatus === "queued" ||
-      response.memoryIndexingStatus === "pending"
-    ) {
-      if (response.attachment.fileType.startsWith("audio/")) {
-        return response.extractionStatus === "extracted"
-          ? "Transcript ready; queued for memory indexing"
-          : "Saved; queued for transcription and memory indexing";
-      }
-      return response.extractionStatus === "extracted"
-        ? "Text extracted; queued for memory indexing"
-        : "Saved; queued for text extraction and memory indexing";
-    }
-
-    if (response.memoryIndexingStatus === "processing") {
-      if (
-        response.attachment.fileType.startsWith("audio/") &&
-        response.extractionStatus !== "extracted"
-      ) {
-        return "Audio transcription in progress";
-      }
-      return response.extractionStatus === "extracted"
-        ? "Text extracted; indexing in progress"
-        : "Text extraction in progress";
-    }
-
-    if (response.memoryIndexingStatus === "failed") {
-      return "Attachment indexing failed; try processing it again";
-    }
-
-    if (response.extractionStatus === "pending") {
-      return "Saved; extraction pending";
-    }
-
-    return "Text extracted; waiting for memory indexing";
-  }
-
-  function getAttachmentStatus(
-    response: AttachmentUploadResponse,
-  ): AttachmentStatus {
-    if (
-      response.processingError ||
-      response.extractionStatus === "failed" ||
-      response.memoryIndexingStatus === "failed" ||
-      response.memoryIndexingStatus === "dead_letter"
-    )
-      return "error";
-    if (response.memoryIndexed || response.memoryIndexingStatus === "succeeded")
-      return "indexed";
-    if (response.memoryIndexingStatus === "processing") return "extracting";
-    return "pending";
-  }
-
   async function handleCopilotAction(action: string) {
     if (!draft.content.trim()) return;
 
     // Require auth to use Copilot
     if (!isAuthenticated) {
-      setShowAuthPrompt(true);
+      diarySubmit.requestAuthentication();
       return;
     }
 
     setIsCopilotLoading(true);
     setActiveCopilotAction(action);
     setErrorMessage("");
-    setState("idle"); // Clear any previous save status
+    diarySubmit.resetFeedback();
 
     try {
       const accessToken = getAccessToken();
@@ -702,148 +279,6 @@ export function DiaryInputForm() {
     }
   }
 
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setErrorMessage("");
-
-    if (isRecording) {
-      setState("error");
-      setErrorMessage("Stop the recording before saving this memory.");
-      return;
-    }
-
-    if (!canSubmit) {
-      return;
-    }
-
-    // Gate: must be signed in to save
-    if (!isAuthenticated) {
-      setShowAuthPrompt(true);
-      return;
-    }
-
-    setShowAuthPrompt(false);
-    setState("saving");
-
-    try {
-      const accessToken = getAccessToken();
-      const firstUsableAttachment = attachmentItems.find(
-        (item) => item.status !== "error",
-      );
-      const fallbackContent = firstUsableAttachment
-        ? isAudioFile(firstUsableAttachment.file)
-          ? "Voice note attached."
-          : firstUsableAttachment.file.type.startsWith("image/")
-            ? "Photo attached."
-            : "File attached."
-        : "Memory captured.";
-      const payload: CreateDiaryPayload = {
-        title: draft.title.trim(),
-        content: draft.content.trim() || fallbackContent,
-        entryDate: new Date(`${draft.entryDate}T12:00:00`).toISOString(),
-        mood: draft.mood,
-        tags: draft.tags,
-      };
-
-      const diaryEntry = await createDiaryEntry(payload, accessToken);
-      const fallbackQuestion = getReflectionFallback(draft.mood);
-      setSavedReflection({
-        entryId: diaryEntry.id,
-        entryTitle: payload.title,
-        mood: draft.mood,
-        question: fallbackQuestion,
-      });
-      setIsReflectionLoading(true);
-      void copilotDiaryText(
-        { text: `${payload.title}\n\n${payload.content}`, action: "reflect" },
-        accessToken,
-      )
-        .then((response) => {
-          setSavedReflection((current) =>
-            current?.entryId === diaryEntry.id
-              ? {
-                  ...current,
-                  question: normalizeReflectionQuestion(
-                    response.result,
-                    fallbackQuestion,
-                  ),
-                }
-              : current,
-          );
-        })
-        .catch(() => undefined)
-        .finally(() => setIsReflectionLoading(false));
-
-      const queuedAttachments = attachmentItems.filter(
-        (item) => item.status === "queued",
-      );
-      let attachmentHadErrors = false;
-
-      for (const item of queuedAttachments) {
-        try {
-          updateAttachmentItem(item.id, {
-            status: "uploading",
-            message: "Uploading to storage",
-          });
-
-          const uploadResult = await uploadDiaryAttachment(
-            diaryEntry.id,
-            item.file,
-            accessToken,
-          );
-          updateAttachmentItem(item.id, {
-            attachmentId: uploadResult.attachment.id,
-            signedUrl: uploadResult.attachment.signedUrl,
-            status: getAttachmentStatus(uploadResult),
-            message: getAttachmentMessage(uploadResult),
-            memoryChunkCount: uploadResult.memoryChunkCount,
-          });
-
-          if (uploadResult.extractionStatus === "pending") {
-            const processResult = await processDiaryAttachment(
-              uploadResult.attachment.id,
-              accessToken,
-            );
-            updateAttachmentItem(item.id, {
-              status: getAttachmentStatus(processResult),
-              signedUrl:
-                processResult.attachment.signedUrl ??
-                uploadResult.attachment.signedUrl,
-              message: getAttachmentMessage(processResult),
-              memoryChunkCount: processResult.memoryChunkCount,
-            });
-          }
-        } catch (attachmentError) {
-          attachmentHadErrors = true;
-          updateAttachmentItem(item.id, {
-            status: "error",
-            message:
-              attachmentError instanceof Error
-                ? attachmentError.message
-                : "Attachment upload failed",
-          });
-        }
-      }
-
-      setDraft(initialDraft);
-      clearHomeDraft();
-      setTagInput("");
-      if (attachmentHadErrors) {
-        setState("error");
-        setErrorMessage(
-          "Diary saved, but one or more attachments failed. Check the file status above.",
-        );
-      } else {
-        setState("success");
-      }
-    } catch (error) {
-      setState("error");
-      setErrorMessage(
-        error instanceof Error ? error.message : "Failed to save diary entry",
-      );
-    }
-  }
-
   const wordCount = useMemo(() => {
     return draft.content.trim().split(/\s+/).filter(Boolean).length;
   }, [draft.content]);
@@ -863,42 +298,37 @@ export function DiaryInputForm() {
     setErrorMessage("");
   }
 
+  function startFollowUp(reflection: SavedReflection) {
+    setCaptureMode("write");
+    setDraft({
+      ...createInitialDiaryDraft(),
+      title: `Reflection on ${reflection.entryTitle}`,
+      content: `${reflection.question}\n\n`,
+      mood: reflection.mood,
+    });
+    attachmentQueue.clear();
+    diarySubmit.resetFeedback();
+    diarySubmit.dismissReflection();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   return (
     <div className="w-full">
-      <form className="enterprise-card space-y-4 p-5" onSubmit={onSubmit}>
-        <div
-          className="grid grid-cols-4 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-900"
-          role="group"
-          aria-label="Capture mode"
-        >
-          {CAPTURE_MODES.map((mode) => {
-            const ModeIcon = mode.icon;
-            const isActive = captureMode === mode.value;
-            return (
-              <button
-                key={mode.value}
-                type="button"
-                aria-pressed={isActive}
-                aria-label={mode.label}
-                title={mode.label}
-                onClick={() => {
-                  if (isRecording && mode.value !== "record") return;
-                  setCaptureMode(mode.value);
-                  setRecordingError("");
-                }}
-                className={`flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg px-2 text-sm font-semibold transition ${
-                  isActive
-                    ? "bg-white text-slate-950 shadow-sm dark:bg-slate-800 dark:text-white"
-                    : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
-                } ${isRecording && mode.value !== "record" ? "cursor-not-allowed opacity-50" : ""}`}
-              >
-                <ModeIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span className="hidden sm:inline">{mode.label}</span>
-                <span className="sr-only sm:hidden">{mode.label}</span>
-              </button>
-            );
-          })}
-        </div>
+      <form
+        className="enterprise-card space-y-4 p-5"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void diarySubmit.submit();
+        }}
+      >
+        <CaptureModeTabs
+          value={captureMode}
+          isRecording={recorder.isRecording}
+          onChange={(mode) => {
+            setCaptureMode(mode);
+            recorder.clearError();
+          }}
+        />
 
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_180px]">
           <div>
@@ -940,85 +370,15 @@ export function DiaryInputForm() {
           </div>
         </div>
 
-        <div>
-          <p className="mb-1.5 text-sm font-semibold text-slate-700 dark:text-slate-300">
-            Mood
-          </p>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {MOOD_OPTIONS.map((option) => {
-              const isSelected = draft.mood === option.value;
-              const MoodIcon = option.icon;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() =>
-                    setDraft((prev) => ({ ...prev, mood: option.value }))
-                  }
-                  className={`min-h-14 rounded-lg border px-3 py-2.5 text-left transition ${
-                    isSelected
-                      ? `${option.className} ring-2 ring-indigo-300 dark:ring-indigo-600`
-                      : "border-slate-200 bg-white/70 text-slate-600 hover:border-indigo-200 hover:bg-indigo-50/30 dark:border-slate-600 dark:bg-slate-700/40 dark:text-slate-300 dark:hover:border-indigo-600 dark:hover:bg-indigo-900/20"
-                  }`}
-                  aria-pressed={isSelected}
-                >
-                  <span className="flex items-center gap-2 text-sm font-semibold">
-                    <MoodIcon className="h-4 w-4" aria-hidden="true" />
-                    {option.label}
-                  </span>
-                  <span className="mt-1 block text-xs opacity-75">
-                    {option.description}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <MoodPicker
+          value={draft.mood}
+          onChange={(mood) => setDraft((current) => ({ ...current, mood }))}
+        />
 
-        <div>
-          <div className="mb-1.5 flex items-center justify-between">
-            <label
-              htmlFor="tags"
-              className="block text-sm font-semibold text-slate-700 dark:text-slate-300"
-            >
-              Tags
-            </label>
-            <span className="text-xs text-slate-400 dark:text-slate-500">
-              {draft.tags.length}/12
-            </span>
-          </div>
-          <div className="min-h-12 rounded-lg border border-slate-200 bg-white px-3 py-2 transition focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 dark:border-slate-700 dark:bg-slate-950 dark:focus-within:border-indigo-500 dark:focus-within:ring-indigo-900/40">
-            <div className="flex flex-wrap items-center gap-2">
-              {draft.tags.map((tag) => (
-                <span key={tag} className="status-badge">
-                  #{tag}
-                  <button
-                    type="button"
-                    onClick={() => removeTag(tag)}
-                    className="rounded-full text-indigo-400 transition hover:text-indigo-700 dark:hover:text-indigo-100"
-                    aria-label={`Remove ${tag} tag`}
-                  >
-                    <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  </button>
-                </span>
-              ))}
-              <input
-                id="tags"
-                value={tagInput}
-                onChange={(event) => setTagInput(event.target.value)}
-                onKeyDown={handleTagInputKeyDown}
-                onBlur={() => addTag()}
-                maxLength={32}
-                placeholder={
-                  draft.tags.length
-                    ? "Add another tag"
-                    : "project, health, meeting"
-                }
-                className="min-w-40 flex-1 bg-transparent px-1 py-1.5 text-sm text-slate-900 outline-none placeholder:text-slate-400 dark:text-slate-100 dark:placeholder:text-slate-500"
-              />
-            </div>
-          </div>
-        </div>
+        <TagInput
+          value={draft.tags}
+          onChange={(tags) => setDraft((current) => ({ ...current, tags }))}
+        />
 
         {(isCalendarLoading || linkedCalendarEvents.length > 0) && (
           <div className="rounded-lg border border-sky-100 bg-sky-50/70 px-3 py-2 dark:border-sky-900/60 dark:bg-sky-950/30">
@@ -1049,71 +409,14 @@ export function DiaryInputForm() {
         )}
 
         {captureMode === "record" ? (
-          <div className="flex flex-col gap-4 border-y border-slate-100 py-4 dark:border-slate-800 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <span
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${
-                  isRecording
-                    ? "bg-rose-100 text-rose-600 dark:bg-rose-950/60 dark:text-rose-300"
-                    : "bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300"
-                }`}
-              >
-                <Mic className="h-5 w-5" aria-hidden="true" />
-              </span>
-              <div>
-                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  {isRecording ? "Recording voice note" : "Voice note"}
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                  {isRecording
-                    ? formatRecordingTime(recordingSeconds)
-                    : "Audio will be transcribed and indexed for AI."}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {isRecording ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={stopRecording}
-                    className="action-primary bg-rose-600 px-4 hover:bg-rose-700"
-                  >
-                    <Square
-                      className="h-4 w-4 fill-current"
-                      aria-hidden="true"
-                    />
-                    Stop
-                  </button>
-                  <button
-                    type="button"
-                    onClick={discardRecording}
-                    className="action-quiet px-3 text-rose-600 dark:text-rose-300"
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    Discard
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void startRecording()}
-                  className="action-primary px-4"
-                >
-                  <Mic className="h-4 w-4" aria-hidden="true" />
-                  Start recording
-                </button>
-              )}
-            </div>
-            {recordingError ? (
-              <p
-                className="text-xs font-medium text-rose-600 dark:text-rose-300 sm:basis-full"
-                role="alert"
-              >
-                {recordingError}
-              </p>
-            ) : null}
-          </div>
+          <RecordingPanel
+            isRecording={recorder.isRecording}
+            seconds={recorder.seconds}
+            error={recorder.error}
+            onStart={() => void recorder.start()}
+            onStop={recorder.stop}
+            onDiscard={recorder.discard}
+          />
         ) : null}
 
         {captureMode === "photo" ? (
@@ -1247,7 +550,7 @@ export function DiaryInputForm() {
           accept="image/png,image/jpeg"
           capture="environment"
           className="hidden"
-          onChange={handleAttachmentSelection}
+          onChange={attachmentQueue.handleSelection}
         />
 
         <input
@@ -1257,22 +560,24 @@ export function DiaryInputForm() {
           multiple
           accept=".txt,.pdf,.png,.jpg,.jpeg,.doc,.docx,.mp3,.m4a,.wav,.ogg,.webm,.aac,.flac,text/plain,application/pdf,image/png,image/jpeg,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/mpeg,audio/mp4,audio/wav,audio/ogg,audio/webm,audio/aac,audio/flac"
           className="hidden"
-          onChange={handleAttachmentSelection}
+          onChange={attachmentQueue.handleSelection}
         />
 
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4 dark:border-slate-700">
           <button
             type="submit"
-            disabled={!canSubmit || state === "saving" || isRecording}
+            disabled={!canSubmit || state === "saving" || recorder.isRecording}
             className="action-primary px-5 disabled:cursor-not-allowed"
           >
             {state === "saving" ? "Saving..." : "Save Diary Entry"}
           </button>
 
-          {attachmentItems.length > 0 ? (
+          {attachmentQueue.items.length > 0 ? (
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              {attachmentItems.length}{" "}
-              {attachmentItems.length === 1 ? "attachment" : "attachments"}
+              {attachmentQueue.items.length}{" "}
+              {attachmentQueue.items.length === 1
+                ? "attachment"
+                : "attachments"}
             </span>
           ) : null}
 
@@ -1315,116 +620,18 @@ export function DiaryInputForm() {
           )}
         </div>
 
-        {attachmentItems.length ? (
-          <div className="divide-y divide-slate-100 border-t border-slate-100 dark:divide-slate-800 dark:border-slate-800">
-            {attachmentItems.map((item) => (
-              <div
-                key={item.id}
-                className="flex flex-col gap-2 px-1 py-3 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-200">
-                    {item.file.name}
-                  </p>
-                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                    {(item.file.size / 1024).toFixed(1)} KB ·{" "}
-                    {item.file.type || "unknown type"}
-                  </p>
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <span
-                    className={`status-badge ${getAttachmentStatusClass(item.status)}`}
-                  >
-                    {item.status}
-                  </span>
-                  <span className="max-w-[220px] truncate text-xs text-slate-500 dark:text-slate-400">
-                    {item.message}
-                  </span>
-                  {item.signedUrl ? (
-                    <a
-                      href={item.signedUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-50 hover:text-indigo-800 dark:text-indigo-300 dark:hover:bg-indigo-900/30"
-                    >
-                      Open
-                    </a>
-                  ) : null}
-                  {item.status === "queued" ? (
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(item.id)}
-                      className="rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-100"
-                    >
-                      Remove
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
+        <AttachmentQueue
+          items={attachmentQueue.items}
+          onRemove={attachmentQueue.removeItem}
+        />
       </form>
 
-      {savedReflection && state !== "saving" ? (
-        <section
-          className="enterprise-card mt-4 overflow-hidden"
-          aria-labelledby="reflect-deeper-heading"
-          aria-live="polite"
-        >
-          <div className="flex gap-4 p-5">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
-              <Sparkles className="h-5 w-5" aria-hidden="true" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2
-                  id="reflect-deeper-heading"
-                  className="text-sm font-semibold text-indigo-700 dark:text-indigo-300"
-                >
-                  Reflect deeper
-                </h2>
-                {isReflectionLoading ? (
-                  <span className="text-xs text-slate-400 dark:text-slate-500">
-                    Personalizing...
-                  </span>
-                ) : null}
-              </div>
-              <p className="mt-2 text-base leading-7 text-slate-800 dark:text-slate-200">
-                {savedReflection.question}
-              </p>
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCaptureMode("write");
-                    setDraft({
-                      ...initialDraft,
-                      title: `Reflection on ${savedReflection.entryTitle}`,
-                      content: `${savedReflection.question}\n\n`,
-                      mood: savedReflection.mood,
-                    });
-                    setAttachmentItems([]);
-                    setState("idle");
-                    setSavedReflection(null);
-                    window.scrollTo({ top: 0, behavior: "smooth" });
-                  }}
-                  className="action-primary px-4"
-                >
-                  Write a follow-up
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                </button>
-                <a
-                  href={`/timeline#entry-${savedReflection.entryId}`}
-                  className="action-quiet min-h-10 px-2 text-indigo-600 dark:text-indigo-300"
-                >
-                  View saved memory
-                </a>
-              </div>
-            </div>
-          </div>
-        </section>
-      ) : null}
+      <ReflectDeeper
+        reflection={savedReflection}
+        isLoading={isReflectionLoading}
+        isSaving={state === "saving"}
+        onFollowUp={startFollowUp}
+      />
 
       {captureMode === "write" ? (
         <details className="mt-5 enterprise-card p-4">

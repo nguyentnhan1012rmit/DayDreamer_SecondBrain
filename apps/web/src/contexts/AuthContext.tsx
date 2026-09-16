@@ -42,7 +42,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [backendProfile, setBackendProfile] = useState<BackendAuthProfile | null>(null);
+  const [backendProfile, setBackendProfile] =
+    useState<BackendAuthProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(
     hasSupabaseConfig ? null : "Missing Supabase environment variables"
@@ -58,8 +59,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Get initial session
     supabase.auth.getSession().then(async ({ data: { session }, error }) => {
       if (error) {
-        console.warn('[Auth] Session restore failed:', error.message);
-        await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+        console.warn("[Auth] Session restore failed:", error.message);
+        await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
         setSession(null);
         setUser(null);
         setBackendProfile(null);
@@ -105,14 +106,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGoogle = useCallback(async (): Promise<{ error?: string }> => {
     if (!supabase) {
-      setConfigError('Cannot sign in: Supabase env vars missing');
-      return { error: 'Cannot sign in: Supabase env vars missing' };
+      setConfigError("Cannot sign in: Supabase env vars missing");
+      return { error: "Cannot sign in: Supabase env vars missing" };
     }
 
-    await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined);
+    await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
 
     const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
+      provider: "google",
       options: {
         redirectTo: getAuthCallbackUrl(),
       },
@@ -177,7 +178,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     await supabase.auth.signOut();
     setBackendProfile(null);
-    router.push('/');
+    router.push("/");
   }, [router]);
 
   const getAccessToken = useCallback(() => {
@@ -192,7 +193,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAuthenticated: !!user,
     backendProfile,
     role,
-    isAdmin: role === 'admin',
+    isAdmin: role === "admin",
     configError,
     signInWithGoogle,
     signUpWithEmail,

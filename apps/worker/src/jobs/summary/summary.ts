@@ -1,84 +1,255 @@
 import {
-  formatSummaryDateTime,
-  formatSummaryPeriodRange,
-  generateAiText,
   getSummaryPeriod,
-  getTuturuuuSummaryModel,
-  isLastLocalDayOfMonth,
   resolveSummaryTimeZone,
-  type SummaryPeriod,
-} from '@second-brain/ai';
-import * as cron from 'node-cron';
-import { prisma } from '../../lib/prisma';
+  SummaryGenerationEngine,
+  type SummaryEngineStore,
+  type SummaryPeriodType,
+} from "@second-brain/ai";
+import {
+  bumpUserMemoryRevision,
+  deleteMemoryChunksForSource,
+  expireUserSearchHistory,
+  getUserMemoryRevision,
+  markDependentSummariesDirty,
+  withPostgresAdvisoryLock,
+} from "@second-brain/db";
+import * as cron from "node-cron";
+import { prisma } from "../../lib/prisma";
 
-type SummaryType = 'daily' | 'weekly' | 'monthly' | 'yearly';
-
-async function generateSummaryForUser(
-  userId: string,
-  type: SummaryType,
-  anchorDate = new Date(),
-  force = false,
-) {
-  const period = getSummaryPeriod(type, anchorDate);
-  const summaryPeriodKey = {
-    user_id: userId,
-    summary_type: type,
-    period_start: period.start,
-    period_end: period.end,
+function createSummaryStore(): SummaryEngineStore {
+  return {
+    findExisting: ({ userId, type, period }) =>
+      prisma.summary.findFirst({
+        where: {
+          user_id: userId,
+          summary_type: type,
+          dirty: false,
+          period_start: period.start,
+          period_end: period.end,
+        },
+      }),
+    findLowerSummaries: ({ userId, type, period }) =>
+      prisma.summary.findMany({
+        where: {
+          user_id: userId,
+          summary_type: type,
+          period_start: { gte: period.start },
+          period_end: { lte: period.end },
+        },
+        orderBy: { period_start: "asc" },
+      }),
+    findActivity: async ({ userId, period, limit, coveredRanges }) => {
+      const dateWhere = (field: string) => ({
+        AND: [
+          { [field]: { gte: period.start, lte: period.end } },
+          ...coveredRanges.map((range) => ({
+            OR: [
+              { [field]: { lt: range.start } },
+              { [field]: { gt: range.end } },
+            ],
+          })),
+        ],
+      });
+      const [diaries, events, attachments, gmail, drive, contacts] =
+        await Promise.all([
+        prisma.diaryEntry.findMany({
+          where: {
+            user_id: userId,
+            ...dateWhere("entry_date"),
+          },
+          orderBy: { entry_date: "asc" },
+          take: limit,
+        }),
+        prisma.calendarEvent.findMany({
+          where: {
+            user_id: userId,
+            ...dateWhere("start_time"),
+          },
+          orderBy: { start_time: "asc" },
+          take: limit,
+        }),
+        prisma.attachment.findMany({
+          where: {
+            extracted_text: { not: null },
+            diary_entry: {
+              user_id: userId,
+              ...dateWhere("entry_date"),
+            },
+          },
+          include: { diary_entry: { select: { entry_date: true } } },
+          orderBy: { created_at: "asc" },
+          take: limit,
+        }),
+        prisma.gmailMessage.findMany({
+          where: { user_id: userId, ...dateWhere("received_at") },
+          orderBy: { received_at: "asc" },
+          take: limit,
+        }),
+        prisma.googleDriveFile.findMany({
+          where: {
+            user_id: userId,
+            extracted_text: { not: null },
+            ...dateWhere("modified_time"),
+          },
+          orderBy: { modified_time: "asc" },
+          take: limit,
+        }),
+        prisma.googleContact.findMany({
+          where: { user_id: userId, ...dateWhere("updated_at") },
+          orderBy: { updated_at: "asc" },
+          take: limit,
+        }),
+      ]);
+      return {
+        diaries,
+        events,
+        attachments: attachments.map((attachment) => ({
+          occurred_at: attachment.diary_entry.entry_date,
+          extracted_text: attachment.extracted_text!,
+          file_type: attachment.file_type,
+          source_title: attachment.storage_path.split("/").pop(),
+        })),
+        gmail: gmail
+          .filter((message) => message.received_at)
+          .map((message) => ({
+            received_at: message.received_at!,
+            sender: message.sender,
+            subject: message.subject,
+            body: message.body,
+          })),
+        drive: drive
+          .filter((file) => file.modified_time)
+          .map((file) => ({
+            occurred_at: file.modified_time!,
+            name: file.name,
+            extracted_text: file.extracted_text!,
+          })),
+        contacts: contacts.map((contact) => ({
+          occurred_at: contact.updated_at,
+          display_name: contact.display_name,
+          email_addresses: contact.email_addresses,
+          organizations: contact.organizations,
+        })),
+      };
+    },
+    getSourceVersion: (userId) =>
+      getUserMemoryRevision(prisma as any, userId),
+    save: ({ userId, type, period, content, sourceVersion }) =>
+      prisma.$transaction(async (tx) => {
+        const currentVersion = await getUserMemoryRevision(tx as any, userId);
+        let dirty = currentVersion !== sourceVersion;
+        if (!dirty) {
+          const persistedVersion = await bumpUserMemoryRevision(
+            tx as any,
+            userId,
+          );
+          dirty = persistedVersion !== sourceVersion + 1n;
+          await expireUserSearchHistory(tx as any, userId);
+        }
+        const summary = await tx.summary.upsert({
+          where: {
+            user_id_summary_type_period_start_period_end: {
+              user_id: userId,
+              summary_type: type,
+              period_start: period.start,
+              period_end: period.end,
+            },
+          },
+          update: { content, source_version: sourceVersion, dirty },
+          create: {
+            user_id: userId,
+            summary_type: type,
+            period_start: period.start,
+            period_end: period.end,
+            content,
+            source_version: sourceVersion,
+            dirty,
+          },
+        });
+        await markDependentSummariesDirty(tx as any, {
+          userId,
+          summaryType: type,
+          periodStart: period.start,
+          periodEnd: period.end,
+        });
+        await deleteMemoryChunksForSource(tx as any, {
+          userId,
+          sourceType: "summary",
+          sourceId: summary.id,
+        });
+        if (!dirty) {
+          await enqueueSummaryIndexingJob(userId, summary.id, tx);
+        }
+        return summary;
+      }),
+    ensureIndexed: async (summary, userId) => {
+      await enqueueSummaryIndexingJob(userId, summary.id);
+    },
   };
-  const existing = await prisma.summary.findFirst({
-    where: summaryPeriodKey,
-  });
+}
 
-  if (existing && !force) {
-    console.log(
-      `[Worker - ${type} Summary] Existing summary found for ${userId}; skipping duplicate.`,
-    );
-    await enqueueSummaryIndexingJob(userId, existing.id);
-    return existing;
-  }
-
-  const context = await buildSummaryContext(userId, type, period);
-  if (!context.hasContent) {
-    console.log(
-      `[Worker - ${type} Summary] No source activity found for ${userId}; skipping.`,
-    );
-    return null;
-  }
-
-  const content = await callAI(type, period, context.text);
-  return prisma.$transaction(async (tx) => {
-    const summary = await tx.summary.upsert({
-      where: {
-        user_id_summary_type_period_start_period_end: summaryPeriodKey,
-      },
-      update: { content },
-      create: {
-        ...summaryPeriodKey,
-        content,
-      },
-    });
-
-    await enqueueSummaryIndexingJob(userId, summary.id, tx);
-    return summary;
+function createSummaryEngine() {
+  return new SummaryGenerationEngine(createSummaryStore(), {
+    contextItemLimit: Number(process.env.SUMMARY_CONTEXT_ITEM_LIMIT ?? 80),
+    contextMaxChars: Number(process.env.SUMMARY_CONTEXT_MAX_CHARS ?? 24_000),
+    timeZone: resolveSummaryTimeZone(),
+    withLock: (key, callback) => withPostgresAdvisoryLock(key, callback),
   });
 }
 
-async function enqueueSummaryIndexingJob(userId: string, summaryId: string, tx: any = prisma) {
+async function generateSummaryForUser(
+  userId: string,
+  type: SummaryPeriodType,
+  anchorDate = new Date(),
+  force = false,
+) {
+  const result = await createSummaryEngine().generate({
+    userId,
+    type,
+    anchorDate,
+    force,
+  });
+
+  if (result.status === "existing") {
+    console.log(
+      `[Worker - ${type} Summary] Existing summary found for ${userId}; skipping duplicate.`,
+    );
+  } else if (result.status === "empty") {
+    console.log(
+      `[Worker - ${type} Summary] No source activity found for ${userId}; skipping.`,
+    );
+  } else if (result.status === "locked") {
+    console.log(
+      `[Worker - ${type} Summary] Another instance owns ${userId}; skipping.`,
+    );
+  } else if (result.status === "stale") {
+    console.log(
+      `[Worker - ${type} Summary] Source changed during generation for ${userId}; leaving summary dirty for catch-up.`,
+    );
+  }
+  return result.summary ?? null;
+}
+
+async function enqueueSummaryIndexingJob(
+  userId: string,
+  summaryId: string,
+  tx: any = prisma,
+) {
   return tx.indexingOutbox.upsert({
     where: {
       job_type_source_type_source_id: {
-        job_type: 'index_memory',
-        source_type: 'summary',
+        job_type: "index_memory",
+        source_type: "summary",
         source_id: summaryId,
       },
     },
     update: {
       user_id: userId,
-      status: 'pending',
+      status: "pending",
       retry_count: 0,
       error: null,
       payload: {},
+      generation: { increment: 1 },
       run_after: new Date(),
       locked_at: null,
       locked_by: null,
@@ -86,274 +257,209 @@ async function enqueueSummaryIndexingJob(userId: string, summaryId: string, tx: 
     },
     create: {
       user_id: userId,
-      job_type: 'index_memory',
-      source_type: 'summary',
+      job_type: "index_memory",
+      source_type: "summary",
       source_id: summaryId,
-      status: 'pending',
+      status: "pending",
       payload: {},
     },
   });
 }
 
-async function buildSummaryContext(userId: string, type: SummaryType, period: SummaryPeriod) {
-  if (type === 'weekly') {
-    const dailySummaries = await findLowerSummaries(userId, 'daily', period);
-    if (dailySummaries.length) {
-      return {
-        hasContent: true,
-        text: formatSummaryList('Daily summaries', dailySummaries, period.timeZone),
-      };
-    }
-  }
-
-  if (type === 'monthly') {
-    const weeklySummaries = await findLowerSummaries(userId, 'weekly', period);
-    if (weeklySummaries.length) {
-      return {
-        hasContent: true,
-        text: formatSummaryList('Weekly summaries', weeklySummaries, period.timeZone),
-      };
-    }
-
-    const dailySummaries = await findLowerSummaries(userId, 'daily', period);
-    if (dailySummaries.length) {
-      return {
-        hasContent: true,
-        text: formatSummaryList('Daily summaries', dailySummaries, period.timeZone),
-      };
-    }
-  }
-
-  if (type === 'yearly') {
-    const monthlySummaries = await findLowerSummaries(userId, 'monthly', period);
-    if (monthlySummaries.length) {
-      return {
-        hasContent: true,
-        text: formatSummaryList('Monthly summaries', monthlySummaries, period.timeZone),
-      };
-    }
-
-    const weeklySummaries = await findLowerSummaries(userId, 'weekly', period);
-    if (weeklySummaries.length) {
-      return {
-        hasContent: true,
-        text: formatSummaryList('Weekly summaries', weeklySummaries, period.timeZone),
-      };
-    }
-  }
-
-  return buildRawActivityContext(userId, period);
-}
-
-function findLowerSummaries(userId: string, type: SummaryType, period: SummaryPeriod) {
-  return prisma.summary.findMany({
-    where: {
-      user_id: userId,
-      summary_type: type,
-      period_start: { gte: period.start },
-      period_end: { lte: period.end },
-    },
-    orderBy: { period_start: 'asc' },
-  });
-}
-
-async function buildRawActivityContext(userId: string, period: SummaryPeriod) {
-  const [diaries, events] = await Promise.all([
-    prisma.diaryEntry.findMany({
-      where: {
-        user_id: userId,
-        entry_date: { gte: period.start, lte: period.end },
-      },
-      orderBy: { entry_date: 'asc' },
-    }),
-    prisma.calendarEvent.findMany({
-      where: {
-        user_id: userId,
-        start_time: { gte: period.start, lte: period.end },
-      },
-      orderBy: { start_time: 'asc' },
-    }),
-  ]);
-
-  const sections: string[] = [];
-  if (diaries.length) {
-    sections.push(
-      [
-        'Diary entries:',
-        ...diaries.map(
-          (entry) =>
-            `- ${formatSummaryDateTime(entry.entry_date, period.timeZone)}: ${entry.raw_text}`,
-        ),
-      ].join('\n'),
-    );
-  }
-
-  if (events.length) {
-    sections.push(
-      [
-        'Calendar events:',
-        ...events.map(
-          (event) =>
-            `- ${formatSummaryDateTime(event.start_time, period.timeZone)}-${formatSummaryDateTime(
-              event.end_time,
-              period.timeZone,
-            )}: ${event.title}${
-              event.description ? ` - ${event.description}` : ''
-            }`,
-        ),
-      ].join('\n'),
-    );
-  }
-
-  return {
-    hasContent: sections.length > 0,
-    text: sections.join('\n\n'),
-  };
-}
-
-async function callAI(type: SummaryType, period: SummaryPeriod, context: string) {
-  const text = await generateAiText({
-    model: getTuturuuuSummaryModel(),
-    prompt: buildSummaryPrompt(type, period, context),
-  });
-  if (!text) throw new Error('AI returned an empty summary.');
-  return sanitizeSummaryContent(text);
-}
-
-function formatSummaryList(
-  label: string,
-  summaries: Array<{ period_start: Date; period_end: Date; content: string }>,
-  timeZone: string,
+async function runForAllUsers(
+  type: SummaryPeriodType,
+  anchorDate = new Date(),
 ) {
-  return [
-    `${label}:`,
-    ...summaries.map(
-      (summary) =>
-        `- ${formatSummaryDateTime(summary.period_start, timeZone)} to ${formatSummaryDateTime(
-          summary.period_end,
-          timeZone,
-        )}: ${summary.content}`,
-    ),
-  ].join('\n');
+  const lock = await withPostgresAdvisoryLock(
+    `summary-cron:${type}`,
+    async () => {
+      const users = await prisma.user.findMany({ select: { id: true } });
+      for (const user of users) {
+        try {
+          await generateSummaryForUser(user.id, type, anchorDate);
+        } catch (error) {
+          console.error(
+            `[Worker - ${type} Summary] Failed for User ${user.id}:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+    },
+  );
+  if (!lock.acquired) {
+    console.log(
+      `[Worker - ${type} Summary] Another worker owns the cron lock; skipping.`,
+    );
+  }
 }
 
-function buildSummaryPrompt(type: SummaryType, period: SummaryPeriod, context: string) {
-  const instructions: Record<SummaryType, string> = {
-    daily:
-      'Create a concise daily log. Capture concrete events, accomplishments, mood if evident, and notable follow-ups.',
-    weekly:
-      'Create a weekly review. Identify key events, progress, recurring themes, blockers, and 2-3 practical next steps.',
-    monthly:
-      'Create a monthly retrospective. Highlight major accomplishments, patterns, challenges, changes in habits/mood, and next-month suggestions.',
-    yearly:
-      'Create a yearly retrospective. Summarize major themes, milestones, recurring patterns, growth areas, and thoughtful recommendations for next year.',
-  };
-
-  return `
-You are the reflection engine for a personal Second Brain diary.
-
-Summary type: ${type}
-Period: ${formatSummaryPeriodRange(period)}
-
-Task:
-${instructions[type]}
-
-Rules:
-- Use only the supplied context.
-- Do not invent people, events, dates, emotions, or outcomes.
-- Prefer specific details over generic encouragement.
-- If evidence is thin, say so briefly.
-- Respond in clear English with short plain-text sections.
-- Do not use Markdown emphasis. Never wrap headings, labels, or phrases in **.
-
-Context:
-${context}
-`.trim();
+function previousClosedPeriodAnchor(type: SummaryPeriodType, now = new Date()) {
+  const currentPeriod = getSummaryPeriod(type, now, resolveSummaryTimeZone());
+  return new Date(currentPeriod.start.getTime() - 1);
 }
 
-function sanitizeSummaryContent(content: string) {
-  return content
-    .replace(/\*\*([\s\S]*?)\*\*/g, '$1')
-    .replace(/\*\*/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .trim();
-}
-
-async function runForAllUsers(type: SummaryType, anchorDate = new Date()) {
-  const users = await prisma.user.findMany({ select: { id: true } });
-  for (const user of users) {
-    try {
-      await generateSummaryForUser(user.id, type, anchorDate);
-    } catch (error) {
-      console.error(
-        `[Worker - ${type} Summary] Failed for User ${user.id}:`,
-        error instanceof Error ? error.message : error,
+export async function runSummaryCatchUp(now = new Date()) {
+  const lock = await withPostgresAdvisoryLock(
+    "summary-catch-up",
+    async () => {
+      const dirty = await prisma.summary.findMany({
+        where: { dirty: true, period_end: { lt: now } },
+        select: { user_id: true, summary_type: true, period_start: true },
+        orderBy: { period_end: "asc" },
+        take: 200,
+      });
+      const rank: Record<string, number> = {
+        daily: 1,
+        weekly: 2,
+        monthly: 3,
+        yearly: 4,
+      };
+      dirty.sort(
+        (left, right) =>
+          (rank[left.summary_type] ?? 99) - (rank[right.summary_type] ?? 99),
       );
-    }
+      for (const summary of dirty) {
+        if (!(summary.summary_type in rank)) continue;
+        try {
+          await generateSummaryForUser(
+            summary.user_id,
+            summary.summary_type as SummaryPeriodType,
+            summary.period_start,
+          );
+        } catch (error) {
+          console.error(
+            `[Worker - Summary Catch-up] Failed ${summary.summary_type} summary for ${summary.user_id}:`,
+            error instanceof Error ? error.message : error,
+          );
+        }
+      }
+
+      const users = await prisma.user.findMany({ select: { id: true } });
+      for (const type of ["daily", "weekly", "monthly", "yearly"] as const) {
+        const anchor = previousClosedPeriodAnchor(type, now);
+        const period = getSummaryPeriod(type, anchor, resolveSummaryTimeZone());
+        const readySummaries = await prisma.summary.findMany({
+          where: {
+            summary_type: type,
+            period_start: period.start,
+            period_end: period.end,
+            dirty: false,
+          },
+          select: { user_id: true },
+        });
+        const readyUserIds = new Set(
+          readySummaries.map((summary) => summary.user_id),
+        );
+        for (const user of users) {
+          if (readyUserIds.has(user.id)) continue;
+          try {
+            await generateSummaryForUser(user.id, type, anchor);
+          } catch (error) {
+            console.error(
+              `[Worker - Summary Catch-up] Failed previous ${type} period for ${user.id}:`,
+              error instanceof Error ? error.message : error,
+            );
+          }
+        }
+      }
+      return { dirtyProcessed: dirty.length, usersChecked: users.length };
+    },
+  );
+  return lock.acquired ? lock.value : null;
+}
+
+export class SummaryCatchUpJob {
+  static startCron() {
+    void runSummaryCatchUp().catch((error) => {
+      console.error("[Worker - Summary Catch-up] Initial run failed:", error);
+    });
+    cron.schedule("*/15 * * * *", () => {
+      void runSummaryCatchUp().catch((error) => {
+        console.error("[Worker - Summary Catch-up] Failed:", error);
+      });
+    });
+    console.log("Background Worker for Summary Catch-up started.");
   }
 }
 
 export class SummaryPipelineJob {
-  static generateDailySummaryForUser(userId: string, anchorDate = new Date(), force = false) {
-    return generateSummaryForUser(userId, 'daily', anchorDate, force);
+  static generateDailySummaryForUser(
+    userId: string,
+    anchorDate = new Date(),
+    force = false,
+  ) {
+    return generateSummaryForUser(userId, "daily", anchorDate, force);
   }
 
   static startCron() {
-    const summaryTimeZone = resolveSummaryTimeZone();
-    cron.schedule('50 23 * * *', async () => {
-      console.log(`[Cron] Triggering Daily Summary pipeline (23:50 ${summaryTimeZone})`);
-      await runForAllUsers('daily');
-    }, { timezone: summaryTimeZone });
-    console.log('Background Worker for Daily Summary Pipeline started.');
+    const timeZone = resolveSummaryTimeZone();
+    cron.schedule("5 0 * * *", () => void runForAllUsers(
+      "daily",
+      previousClosedPeriodAnchor("daily"),
+    ), {
+      timezone: timeZone,
+    });
+    console.log("Background Worker for Daily Summary Pipeline started.");
   }
 }
 
 export class WeeklySummaryPipelineJob {
-  static generateWeeklySummaryForUser(userId: string, anchorDate = new Date(), force = false) {
-    return generateSummaryForUser(userId, 'weekly', anchorDate, force);
+  static generateWeeklySummaryForUser(
+    userId: string,
+    anchorDate = new Date(),
+    force = false,
+  ) {
+    return generateSummaryForUser(userId, "weekly", anchorDate, force);
   }
 
   static startCron() {
-    const summaryTimeZone = resolveSummaryTimeZone();
-    cron.schedule('55 23 * * 0', async () => {
-      console.log(`[Cron] Triggering Weekly Summary pipeline (Sunday 23:55 ${summaryTimeZone})`);
-      await runForAllUsers('weekly');
-    }, { timezone: summaryTimeZone });
-    console.log('Background Worker for Weekly Summary Pipeline started.');
+    const timeZone = resolveSummaryTimeZone();
+    cron.schedule("10 0 * * 1", () => void runForAllUsers(
+      "weekly",
+      previousClosedPeriodAnchor("weekly"),
+    ), {
+      timezone: timeZone,
+    });
+    console.log("Background Worker for Weekly Summary Pipeline started.");
   }
 }
 
 export class MonthlySummaryPipelineJob {
-  static generateMonthlySummaryForUser(userId: string, anchorDate = new Date(), force = false) {
-    return generateSummaryForUser(userId, 'monthly', anchorDate, force);
+  static generateMonthlySummaryForUser(
+    userId: string,
+    anchorDate = new Date(),
+    force = false,
+  ) {
+    return generateSummaryForUser(userId, "monthly", anchorDate, force);
   }
 
   static startCron() {
-    const summaryTimeZone = resolveSummaryTimeZone();
-    cron.schedule('58 23 28-31 * *', async () => {
-      const now = new Date();
-      if (!isLastLocalDayOfMonth(now, summaryTimeZone)) return;
-
-      console.log(
-        `[Cron] Triggering Monthly Summary pipeline (last local day of month, 23:58 ${summaryTimeZone})`,
-      );
-      await runForAllUsers('monthly', now);
-    }, { timezone: summaryTimeZone });
-    console.log('Background Worker for Monthly Summary Pipeline started.');
+    const timeZone = resolveSummaryTimeZone();
+    cron.schedule("15 0 1 * *", () => void runForAllUsers(
+      "monthly",
+      previousClosedPeriodAnchor("monthly"),
+    ), { timezone: timeZone });
+    console.log("Background Worker for Monthly Summary Pipeline started.");
   }
 }
 
 export class YearlySummaryPipelineJob {
-  static generateYearlySummaryForUser(userId: string, anchorDate = new Date(), force = false) {
-    return generateSummaryForUser(userId, 'yearly', anchorDate, force);
+  static generateYearlySummaryForUser(
+    userId: string,
+    anchorDate = new Date(),
+    force = false,
+  ) {
+    return generateSummaryForUser(userId, "yearly", anchorDate, force);
   }
 
   static startCron() {
-    const summaryTimeZone = resolveSummaryTimeZone();
-    cron.schedule('59 23 31 12 *', async () => {
-      console.log(`[Cron] Triggering Yearly Summary pipeline (Dec 31 23:59 ${summaryTimeZone})`);
-      await runForAllUsers('yearly');
-    }, { timezone: summaryTimeZone });
-    console.log('Background Worker for Yearly Summary Pipeline started.');
+    const timeZone = resolveSummaryTimeZone();
+    cron.schedule("20 0 1 1 *", () => void runForAllUsers(
+      "yearly",
+      previousClosedPeriodAnchor("yearly"),
+    ), {
+      timezone: timeZone,
+    });
+    console.log("Background Worker for Yearly Summary Pipeline started.");
   }
 }

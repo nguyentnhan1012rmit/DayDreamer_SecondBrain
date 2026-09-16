@@ -21,6 +21,7 @@ export interface RetrievalFilters {
   lexicalWeight?: number;
   vectorWeight?: number;
   allowTemporalFallback?: boolean;
+  fallbackToLatest?: boolean;
 }
 
 export interface MemorySearchHit {
@@ -681,6 +682,17 @@ function buildWhereClause(
     conditions.push(Prisma.sql`occurred_at <= ${filters.endDate}`);
   }
 
+  if (filters.startDate && filters.endDate) {
+    const summaryEndExclusive = new Date(filters.endDate.getTime() + 1);
+    conditions.push(Prisma.sql`(
+      source_type <> 'summary'
+      OR (
+        NULLIF(metadata->>'periodStart', '')::timestamptz >= ${filters.startDate}
+        AND NULLIF(metadata->>'periodEnd', '')::timestamptz <= ${summaryEndExclusive}
+      )
+    )`);
+  }
+
   return Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}`;
 }
 
@@ -744,6 +756,16 @@ function buildEntityWhereClause(
       Prisma.sql`entity_chunks.occurred_at <= ${filters.endDate}`,
     );
   }
+  if (filters.startDate && filters.endDate) {
+    const summaryEndExclusive = new Date(filters.endDate.getTime() + 1);
+    conditions.push(Prisma.sql`(
+      entity_chunks.source_type <> 'summary'
+      OR (
+        NULLIF(entity_chunks.metadata->>'periodStart', '')::timestamptz >= ${filters.startDate}
+        AND NULLIF(entity_chunks.metadata->>'periodEnd', '')::timestamptz <= ${summaryEndExclusive}
+      )
+    )`);
+  }
 
   return Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}`;
 }
@@ -771,12 +793,7 @@ function buildChunkTypeBoost(filters: RetrievalFilters): PrismaSql {
 }
 
 function buildSearchDocument(): PrismaSql {
-  return Prisma.sql`
-    to_tsvector(
-      'simple',
-      coalesce(text, '') || ' ' || coalesce(evidence, '') || ' ' || coalesce(metadata::text, '')
-    )
-  `;
+  return Prisma.sql`memory_chunks.search_document`;
 }
 
 function markEmbeddingErrorLexicalFallback(

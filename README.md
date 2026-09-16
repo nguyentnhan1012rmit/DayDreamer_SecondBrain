@@ -198,6 +198,7 @@ GOOGLE_REDIRECT_URI="http://localhost:3001/api/calendar/oauth/callback"
 APP_TIMEZONE="Asia/Ho_Chi_Minh"                         # local day/week/month boundaries for AI recall and summaries
 TUTURUUU_AI_API_KEY="ttr_ai_your-one-time-secret"
 TUTURUUU_AI_BASE_URL="https://ai.tuturuuu.com/v1"      # optional, defaults to Tuturuuu production
+TUTURUUU_REQUEST_TIMEOUT_MS="30000"                    # optional; HTTP deadline for generation and embedding requests
 TUTURUUU_EMBEDDING_MODEL="google/gemini-embedding-2"   # optional; confirm allowed models with GET /v1/models
 TUTURUUU_ANSWER_MODEL="google/gemini-3.5-flash-lite"  # optional; recommended low-cost answer model
 AUDIO_TRANSCRIPTION_PROVIDER="local"                  # local (default) uses Whisper; tuturuuu is opt-in

@@ -1,21 +1,27 @@
+import { randomUUID } from "node:crypto";
 import { ZodError, type z } from "zod";
 import {
   generateTuturuuuText,
+  type TuturuuuJsonSchema,
 } from "./tuturuuu-client.ts";
-
-type ResponseSchema = unknown;
 
 export interface GenerateTuturuuuJsonOptions<T> {
   model: string;
   prompt: string;
   systemPrompt?: string;
-  responseSchema: ResponseSchema;
+  responseSchema: TuturuuuJsonSchema;
+  responseSchemaName?: string;
+  responseSchemaDescription?: string;
+  responseSchemaStrict?: boolean;
   validator: z.ZodType<T>;
   temperature?: number;
   maxOutputTokens?: number;
   maxRetries?: number;
   maxFormatRetries?: number;
   maxRetryDelayMs?: number;
+  idempotencyKey?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface TuturuuuJsonTokenUsage {
@@ -49,8 +55,7 @@ export async function generateTuturuuuJsonWithMeta<T>(
   options: GenerateTuturuuuJsonOptions<T>,
 ): Promise<TuturuuuJsonResultWithMeta<T>> {
   const modelName = options.model;
-  void options.responseSchema;
-  void options.temperature;
+  const logicalIdempotencyKey = options.idempotencyKey ?? randomUUID();
 
   let lastError: Error | null = null;
   const configuredRetries = Number(
@@ -83,6 +88,17 @@ export async function generateTuturuuuJsonWithMeta<T>(
         prompt,
         systemPrompt: options.systemPrompt,
         maxOutputTokens: options.maxOutputTokens,
+        temperature: options.temperature,
+        responseSchema: options.responseSchema,
+        responseSchemaName: options.responseSchemaName,
+        responseSchemaDescription: options.responseSchemaDescription,
+        responseSchemaStrict: options.responseSchemaStrict,
+        idempotencyKey: buildAttemptIdempotencyKey(
+          logicalIdempotencyKey,
+          formatRetries,
+        ),
+        timeoutMs: options.timeoutMs,
+        signal: options.signal,
       });
       const text = generation.text;
       assertGenerationComplete(generation.finishReason, text);
@@ -117,11 +133,32 @@ export async function generateTuturuuuJsonWithMeta<T>(
       console.warn(
         `[TuturuuuJSON] ${summarizeTransientError(lastError)}; retrying in ${delayMs}ms (attempt ${transientRetries}/${maxRetries}).`,
       );
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await sleepBeforeRetry(delayMs, options.signal);
     }
   }
 
   throw lastError!;
+}
+
+function sleepBeforeRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? new Error("Tuturuuu request aborted."));
+  }
+
+  return new Promise((resolve, reject) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      if (timeout) clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new Error("Tuturuuu request aborted."));
+    };
+    timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
 }
 
 async function generateJsonText(input: {
@@ -129,6 +166,14 @@ async function generateJsonText(input: {
   prompt: string;
   systemPrompt?: string;
   maxOutputTokens?: number;
+  temperature?: number;
+  responseSchema: TuturuuuJsonSchema;
+  responseSchemaName?: string;
+  responseSchemaDescription?: string;
+  responseSchemaStrict?: boolean;
+  idempotencyKey: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<{
   text: string;
   finishReason?: string;
@@ -138,6 +183,14 @@ async function generateJsonText(input: {
     model: input.modelName,
     prompt: input.prompt,
     maxOutputTokens: input.maxOutputTokens,
+    temperature: input.temperature,
+    responseSchema: input.responseSchema,
+    responseSchemaName: input.responseSchemaName,
+    responseSchemaDescription: input.responseSchemaDescription,
+    responseSchemaStrict: input.responseSchemaStrict,
+    idempotencyKey: input.idempotencyKey,
+    timeoutMs: input.timeoutMs,
+    signal: input.signal,
     systemPrompt: input.systemPrompt ??
       "Return only valid JSON matching the user's requested schema. Do not include markdown fences or prose outside the JSON.",
   });
@@ -150,6 +203,15 @@ async function generateJsonText(input: {
       totalTokens: result.usage?.totalTokens ?? 0,
     },
   };
+}
+
+function buildAttemptIdempotencyKey(
+  logicalIdempotencyKey: string,
+  formatRetry: number,
+): string {
+  return formatRetry === 0
+    ? logicalIdempotencyKey
+    : `${logicalIdempotencyKey}-format-${formatRetry}`;
 }
 
 function buildJsonOnlyRetryPrompt(originalPrompt: string, error: Error | null): string {
@@ -218,9 +280,13 @@ function maybeLogInvalidJson(error: Error): void {
 function isTransientTuturuuuError(error: Error): boolean {
   const status = getErrorStatus(error);
   return (
+    status === 408 ||
     status === 429 ||
     status === 500 ||
+    status === 502 ||
     status === 503 ||
+    status === 504 ||
+    (error as { code?: unknown }).code === "TUTURUUU_TIMEOUT" ||
     error.message.includes("ECONNRESET") ||
     error.message.includes("fetch failed")
   );
@@ -299,7 +365,7 @@ function getErrorStatus(error: Error): number | undefined {
   const status = (error as { status?: unknown }).status;
   if (typeof status === "number") return status;
 
-  const statusMatch = error.message.match(/\[(429|500|503)[^\]]*\]/);
+  const statusMatch = error.message.match(/\[(408|429|500|502|503|504)[^\]]*\]/);
   return statusMatch?.[1] ? Number(statusMatch[1]) : undefined;
 }
 

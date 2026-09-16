@@ -100,6 +100,7 @@ const TuturuuuSemanticChunkResponseSchema = {
         properties: {
           chunkType: {
             type: "string",
+            enum: [...ALLOWED_CHUNK_TYPES],
             description:
               "One of feedback, decision, action_item, reflection, event, general.",
           },
@@ -121,7 +122,7 @@ const TuturuuuSemanticChunkResponseSchema = {
             description: "Recurring habits or routines mentioned (e.g., 'morning jog', 'daily reading').",
           },
           tags: { type: "array", items: { type: "string" } },
-          importance: { type: "integer" },
+          importance: { type: "integer", minimum: 1, maximum: 5 },
         },
         required: [
           "chunkType",
@@ -251,6 +252,7 @@ async function generateChunksWithTuturuuu(prompt: string): Promise<SemanticChunk
     model: getTuturuuuChunkModel(),
     prompt,
     responseSchema: TuturuuuSemanticChunkResponseSchema,
+    responseSchemaName: "semantic_memory_chunks",
     validator: SemanticChunkSchema,
   });
 }

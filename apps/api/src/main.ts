@@ -9,6 +9,7 @@ import { auditLogMiddleware } from './common/middleware/audit-log.middleware';
 import { rateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { requestIdMiddleware } from './common/middleware/request-id.middleware';
 import { securityHeadersMiddleware } from './common/middleware/security-headers.middleware';
+import { performanceMiddleware } from './common/middleware/performance.middleware';
 
 function getCorsOrigins() {
   const rawOrigins = [process.env.CORS_ORIGIN, process.env.FRONTEND_URL]
@@ -34,6 +35,7 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api');
   app.use(requestIdMiddleware);
+  app.use(performanceMiddleware);
   app.use(securityHeadersMiddleware);
   app.use(auditLogMiddleware);
   app.use(rateLimitMiddleware);

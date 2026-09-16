@@ -11,6 +11,7 @@ async function main() {
           run_after = now(),
           locked_at = NULL,
           locked_by = NULL,
+          generation = generation + 1,
           processed_at = NULL,
           updated_at = now()
       WHERE job_type = 'index_memory'

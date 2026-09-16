@@ -15,15 +15,16 @@ import { CreateDiaryDto } from './dto/create-diary.dto';
 import { CopilotDto } from './dto/copilot.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
-export const MAX_DIARY_ENTRIES_PER_REQUEST = 500;
+export const DEFAULT_DIARY_ENTRIES_PER_REQUEST = 25;
+export const MAX_DIARY_ENTRIES_PER_REQUEST = 50;
 
 type AuthenticatedRequest = { user: { userId: string } };
 
 export function parseDiaryLimit(value?: string) {
-  if (!value) return undefined;
+  if (!value) return DEFAULT_DIARY_ENTRIES_PER_REQUEST;
 
   const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return undefined;
+  if (!Number.isFinite(parsed)) return DEFAULT_DIARY_ENTRIES_PER_REQUEST;
 
   return Math.min(Math.max(parsed, 1), MAX_DIARY_ENTRIES_PER_REQUEST);
 }
@@ -60,9 +61,30 @@ export class DiaryController {
   findAll(
     @Request() req: AuthenticatedRequest,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
   ) {
     return this.diaryService.findAll(req.user.userId, {
       limit: parseDiaryLimit(limit),
+      cursor,
+      startDate,
+      endDate,
+    });
+  }
+
+  @Get('statistics')
+  getStatistics(
+    @Request() req: AuthenticatedRequest,
+    @Query('period') period?: string,
+    @Query('anchor') anchor?: string,
+    @Query('timeZone') timeZone?: string,
+  ) {
+    const normalizedPeriod = period === 'weekly' ? 'weekly' : 'yearly';
+    return this.diaryService.getStatistics(req.user.userId, {
+      period: normalizedPeriod,
+      anchor,
+      timeZone,
     });
   }
 

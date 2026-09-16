@@ -40,22 +40,40 @@ export function BrainLogo({
       aria-hidden="true"
     >
       <defs>
-        <linearGradient id="comp-brain-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+        <linearGradient
+          id="comp-brain-gradient"
+          x1="0%"
+          y1="0%"
+          x2="100%"
+          y2="0%"
+        >
           <stop offset="0%" stopColor="#00F0FF" />
           <stop offset="35%" stopColor="#0072FF" />
           <stop offset="65%" stopColor="#7B2CBF" />
           <stop offset="100%" stopColor="#FF007F" />
         </linearGradient>
 
-        <filter id="comp-glow-blur" x="-50%" y="-50%" width="200%" height="200%">
+        <filter
+          id="comp-glow-blur"
+          x="-50%"
+          y="-50%"
+          width="200%"
+          height="200%"
+        >
           <feGaussianBlur stdDeviation="1.5" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
-        
-        <filter id="comp-glow-deep" x="-100%" y="-100%" width="300%" height="300%">
+
+        <filter
+          id="comp-glow-deep"
+          x="-100%"
+          y="-100%"
+          width="300%"
+          height="300%"
+        >
           <feGaussianBlur stdDeviation="4" result="blur" />
         </filter>
 
@@ -81,37 +99,94 @@ export function BrainLogo({
         </radialGradient>
       </defs>
 
-      <g filter="url(#comp-glow-deep)" className="opacity-25" style={{ transformOrigin: "50% 50%" }}>
-        <path d="M 46,60 L 37,60 L 23,49 L 32,33 L 49,31 L 66,33 L 77,49 L 61,60 L 54,60 Z" fill="url(#comp-brain-gradient)" />
+      <g
+        filter="url(#comp-glow-deep)"
+        className="opacity-25"
+        style={{ transformOrigin: "50% 50%" }}
+      >
+        <path
+          d="M 46,60 L 37,60 L 23,49 L 32,33 L 49,31 L 66,33 L 77,49 L 61,60 L 54,60 Z"
+          fill="url(#comp-brain-gradient)"
+        />
       </g>
 
       <g fill="none">
-        <g stroke="url(#comp-brain-gradient)" strokeLinecap="round" strokeLinejoin="round" opacity={0.25} filter="url(#comp-glow-blur)">
-          <path d="M 46,60 L 41,60 L 41,64 L 37,64 L 37,60 L 25,60 L 23,49 L 26,38 L 32,33 L 43,28 L 49,31 L 58,28 L 66,33 L 74,38 L 77,49 L 74,60 L 61,60 L 54,60" strokeWidth={6} />
+        <g
+          stroke="url(#comp-brain-gradient)"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={0.25}
+          filter="url(#comp-glow-blur)"
+        >
+          <path
+            d="M 46,60 L 41,60 L 41,64 L 37,64 L 37,60 L 25,60 L 23,49 L 26,38 L 32,33 L 43,28 L 49,31 L 58,28 L 66,33 L 74,38 L 77,49 L 74,60 L 61,60 L 54,60"
+            strokeWidth={6}
+          />
           <path d="M 48,60 L 48,74 A 2,2 0 0,0 52,74 L 52,60" strokeWidth={6} />
-          <path d="M 23,49 L 44,48 M 23,49 L 32,33 M 37,60 L 44,48 M 32,33 L 44,48 M 49,31 L 44,48 M 44,48 L 47,60" strokeWidth={4} />
-          <path d="M 49,31 L 60,45 M 60,45 L 66,33 M 60,45 L 77,49 M 60,45 L 61,60 M 60,45 L 53,60" strokeWidth={4} />
+          <path
+            d="M 23,49 L 44,48 M 23,49 L 32,33 M 37,60 L 44,48 M 32,33 L 44,48 M 49,31 L 44,48 M 44,48 L 47,60"
+            strokeWidth={4}
+          />
+          <path
+            d="M 49,31 L 60,45 M 60,45 L 66,33 M 60,45 L 77,49 M 60,45 L 61,60 M 60,45 L 53,60"
+            strokeWidth={4}
+          />
           <path d="M 44,48 L 60,45" strokeWidth={5} />
         </g>
 
-        <g stroke="url(#comp-brain-gradient)" strokeLinecap="round" strokeLinejoin="round" opacity={0.5} filter="url(#comp-glow-blur)">
-          <path d="M 46,60 L 41,60 L 41,64 L 37,64 L 37,60 L 25,60 L 23,49 L 26,38 L 32,33 L 43,28 L 49,31 L 58,28 L 66,33 L 74,38 L 77,49 L 74,60 L 61,60 L 54,60" strokeWidth={3} />
+        <g
+          stroke="url(#comp-brain-gradient)"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={0.5}
+          filter="url(#comp-glow-blur)"
+        >
+          <path
+            d="M 46,60 L 41,60 L 41,64 L 37,64 L 37,60 L 25,60 L 23,49 L 26,38 L 32,33 L 43,28 L 49,31 L 58,28 L 66,33 L 74,38 L 77,49 L 74,60 L 61,60 L 54,60"
+            strokeWidth={3}
+          />
           <path d="M 48,60 L 48,74 A 2,2 0 0,0 52,74 L 52,60" strokeWidth={3} />
-          <path d="M 23,49 L 44,48 M 23,49 L 32,33 M 37,60 L 44,48 M 32,33 L 44,48 M 49,31 L 44,48 M 44,48 L 47,60" strokeWidth={2} />
-          <path d="M 49,31 L 60,45 M 60,45 L 66,33 M 60,45 L 77,49 M 60,45 L 61,60 M 60,45 L 53,60" strokeWidth={2} />
+          <path
+            d="M 23,49 L 44,48 M 23,49 L 32,33 M 37,60 L 44,48 M 32,33 L 44,48 M 49,31 L 44,48 M 44,48 L 47,60"
+            strokeWidth={2}
+          />
+          <path
+            d="M 49,31 L 60,45 M 60,45 L 66,33 M 60,45 L 77,49 M 60,45 L 61,60 M 60,45 L 53,60"
+            strokeWidth={2}
+          />
           <path d="M 44,48 L 60,45" strokeWidth={2.5} />
         </g>
 
-        <g stroke="url(#comp-brain-gradient)" strokeLinecap="round" strokeLinejoin="round" opacity={0.95}>
-          <path d="M 46,60 L 41,60 L 41,64 L 37,64 L 37,60 L 25,60 L 23,49 L 26,38 L 32,33 L 43,28 L 49,31 L 58,28 L 66,33 L 74,38 L 77,49 L 74,60 L 61,60 L 54,60" strokeWidth={1.5} />
-          <path d="M 48,60 L 48,74 A 2,2 0 0,0 52,74 L 52,60" strokeWidth={1.5} />
-          <path d="M 23,49 L 44,48 M 23,49 L 32,33 M 37,60 L 44,48 M 32,33 L 44,48 M 49,31 L 44,48 M 44,48 L 47,60" strokeWidth={1} />
-          <path d="M 49,31 L 60,45 M 60,45 L 66,33 M 60,45 L 77,49 M 60,45 L 61,60 M 60,45 L 53,60" strokeWidth={1} />
+        <g
+          stroke="url(#comp-brain-gradient)"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          opacity={0.95}
+        >
+          <path
+            d="M 46,60 L 41,60 L 41,64 L 37,64 L 37,60 L 25,60 L 23,49 L 26,38 L 32,33 L 43,28 L 49,31 L 58,28 L 66,33 L 74,38 L 77,49 L 74,60 L 61,60 L 54,60"
+            strokeWidth={1.5}
+          />
+          <path
+            d="M 48,60 L 48,74 A 2,2 0 0,0 52,74 L 52,60"
+            strokeWidth={1.5}
+          />
+          <path
+            d="M 23,49 L 44,48 M 23,49 L 32,33 M 37,60 L 44,48 M 32,33 L 44,48 M 49,31 L 44,48 M 44,48 L 47,60"
+            strokeWidth={1}
+          />
+          <path
+            d="M 49,31 L 60,45 M 60,45 L 66,33 M 60,45 L 77,49 M 60,45 L 61,60 M 60,45 L 53,60"
+            strokeWidth={1}
+          />
           <path d="M 44,48 L 60,45" strokeWidth={1.25} />
         </g>
       </g>
 
-      <g style={{ transformOrigin: "50% 50%" }} className="transition-transform duration-500 ease-out">
+      <g
+        style={{ transformOrigin: "50% 50%" }}
+        className="transition-transform duration-500 ease-out"
+      >
         <circle cx="23" cy="49" r="6" fill="url(#comp-halo-cyan)" />
         <circle cx="23" cy="49" r="2.5" fill="#00F0FF" />
         <circle cx="23" cy="49" r="1" fill="#FFFFFF" />
@@ -175,8 +250,13 @@ export function BrainLogo({
       {showText && (
         <div className="flex flex-col select-none">
           <div className="flex items-center">
-            <span className={`text-lg font-extrabold tracking-tight text-slate-900 dark:text-slate-50 transition-colors duration-300 ${textClassName}`}>
-              Day<span className="bg-gradient-to-r from-blue-500 to-indigo-600 bg-clip-text text-transparent dark:from-cyan-400 dark:to-indigo-400">Dreamer</span>
+            <span
+              className={`text-lg font-extrabold tracking-tight text-slate-900 dark:text-slate-50 transition-colors duration-300 ${textClassName}`}
+            >
+              Day
+              <span className="bg-gradient-to-r from-blue-500 to-indigo-600 bg-clip-text text-transparent dark:from-cyan-400 dark:to-indigo-400">
+                Dreamer
+              </span>
             </span>
           </div>
           {subText && (
@@ -193,8 +273,13 @@ export function BrainLogo({
       {showText && (
         <div className="flex flex-col select-none">
           <div className="flex items-center">
-            <span className={`text-lg font-extrabold tracking-tight text-slate-900 dark:text-slate-50 transition-colors duration-300 ${textClassName}`}>
-              Day<span className="bg-gradient-to-r from-blue-500 to-indigo-600 bg-clip-text text-transparent dark:from-cyan-400 dark:to-indigo-400">Dreamer</span>
+            <span
+              className={`text-lg font-extrabold tracking-tight text-slate-900 dark:text-slate-50 transition-colors duration-300 ${textClassName}`}
+            >
+              Day
+              <span className="bg-gradient-to-r from-blue-500 to-indigo-600 bg-clip-text text-transparent dark:from-cyan-400 dark:to-indigo-400">
+                Dreamer
+              </span>
             </span>
           </div>
           {subText && (

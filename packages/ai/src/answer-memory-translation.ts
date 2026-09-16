@@ -53,6 +53,7 @@ export async function translateFastAnswerIfUseful(
         responseLanguage: options.responseLanguage,
       }),
       responseSchema: TuturuuuFastTranslatedAnswerResponseSchema,
+      responseSchemaName: "memory_answer_translation",
       validator: FastTranslatedAnswerSchema,
       temperature: 0,
       maxOutputTokens: getFastTranslationMaxTokens(result.answerMode),

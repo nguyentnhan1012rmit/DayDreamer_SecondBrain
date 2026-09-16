@@ -1,0 +1,15 @@
+import Link from "next/link";
+import { ArrowRight, Clock3, PencilLine, Plus } from "lucide-react";
+import type { DiaryEntry } from "@/lib/api/diary-api";
+import { MOOD_META } from "@/lib/mood-meta";
+import { formatCreatedTime, formatMemoryDate } from "../home-formatters";
+
+export function TodayMemoriesWidget({ entries, latestEntry, isLoading }: { entries: DiaryEntry[]; latestEntry?: DiaryEntry; isLoading: boolean }) {
+  return <section><div className="mb-4 flex items-end justify-between gap-3"><div><p className="flex items-center gap-2 text-[13px] font-semibold text-pink-600 dark:text-pink-300"><Clock3 className="h-4 w-4" />Today&apos;s memories</p><h2 className="mt-1 text-2xl font-semibold text-slate-950 dark:text-white">What you captured</h2></div><Link href="/timeline" className="text-sm font-semibold text-pink-600 hover:text-pink-800 dark:text-pink-300">View timeline</Link></div>{isLoading ? <div className="space-y-3">{[0, 1].map((item) => <div key={item} className="enterprise-card p-5"><div className="skeleton-line h-5 w-2/5" /><div className="skeleton-line mt-3 h-4 w-full" /></div>)}</div> : entries.length ? <div className="space-y-3">{entries.slice(0, 3).map((entry) => <MemoryRow key={entry.id} entry={entry} />)}</div> : <div className="rounded-lg border border-dashed border-slate-300 bg-white/60 px-5 py-6 text-center dark:border-slate-700 dark:bg-slate-900/30"><span className="mx-auto flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-50 text-cyan-600"><PencilLine className="h-4 w-4" /></span><h3 className="mt-3 text-base font-semibold text-slate-950 dark:text-white">Add today&apos;s first memory</h3><p className="mx-auto mt-1.5 max-w-md text-sm leading-6 text-slate-600 dark:text-slate-300">{latestEntry ? `Your latest capture was ${formatMemoryDate(latestEntry)}.` : "One honest sentence is enough to begin."}</p><Link href="/diary" className="action-primary mt-4"><Plus className="h-4 w-4" />New memory</Link></div>}</section>;
+}
+
+function MemoryRow({ entry }: { entry: DiaryEntry }) {
+  const mood = entry.mood ? MOOD_META[entry.mood] : null;
+  const MoodIcon = mood?.icon;
+  return <Link href={`/timeline#entry-${entry.id}`} className="group block rounded-lg border border-slate-200 bg-white p-5 transition hover:border-pink-200 hover:shadow-sm dark:border-slate-800 dark:bg-slate-900/60"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><h3 className="truncate text-base font-semibold text-slate-950 group-hover:text-pink-700 dark:text-white">{entry.title}</h3><p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{entry.content}</p></div><ArrowRight className="mt-1 h-4 w-4 shrink-0 text-slate-300" /></div><div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500"><span className="flex items-center gap-1.5"><Clock3 className="h-3.5 w-3.5" />{formatCreatedTime(entry)}</span>{mood && MoodIcon ? <span className={`flex items-center gap-1.5 ${mood.iconClassName}`}><MoodIcon className="h-3.5 w-3.5" />{mood.label}</span> : null}{entry.tags?.slice(0, 2).map((tag) => <span key={tag}>#{tag}</span>)}</div></Link>;
+}

@@ -1,6 +1,9 @@
 import { Prisma } from "@second-brain/db";
 import { TUTURUUU_EMBEDDING_MODEL } from "./embedding.ts";
-import type { MemoryIndexDiagnostics } from "./answer-memory-types.ts";
+import type {
+  AnswerMemoryResult,
+  MemoryIndexDiagnostics,
+} from "./answer-memory-types.ts";
 import type { RetrievalFilters } from "./retrieval.ts";
 
 type PrismaSql = ReturnType<typeof Prisma.sql>;
@@ -84,6 +87,32 @@ export function shouldAttachMemoryIndexDiagnostics(input: {
   );
 }
 
+export async function maybeGetMemoryIndexDiagnostics(
+  dbClient: unknown,
+  userId: string,
+  filters: RetrievalFilters,
+  result: AnswerMemoryResult,
+  chunksRetrieved: number,
+) {
+  if (
+    !shouldAttachMemoryIndexDiagnostics({
+      chunksRetrieved,
+      status: result.analytics?.status,
+      noMemory: result.noMemory,
+      hasModelError: Boolean(result.modelError),
+    })
+  ) {
+    return undefined;
+  }
+
+  try {
+    return await getMemoryIndexDiagnostics(dbClient, userId, filters);
+  } catch (error) {
+    console.warn("[AnswerMemory] Failed to load memory index diagnostics:", error);
+    return undefined;
+  }
+}
+
 function buildFilterConditions(
   userId: string,
   filters: RetrievalFilters,
@@ -138,6 +167,17 @@ function buildFilterConditions(
 
   if (filters.endDate) {
     conditions.push(Prisma.sql`occurred_at <= ${filters.endDate}`);
+  }
+
+  if (filters.startDate && filters.endDate) {
+    const summaryEndExclusive = new Date(filters.endDate.getTime() + 1);
+    conditions.push(Prisma.sql`(
+      source_type <> 'summary'
+      OR (
+        NULLIF(metadata->>'periodStart', '')::timestamptz >= ${filters.startDate}
+        AND NULLIF(metadata->>'periodEnd', '')::timestamptz <= ${summaryEndExclusive}
+      )
+    )`);
   }
 
   return conditions;

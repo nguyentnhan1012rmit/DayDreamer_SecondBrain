@@ -401,6 +401,7 @@ export class IndexingService {
   private requeueData() {
     return {
       status: 'pending',
+      generation: { increment: 1 },
       retry_count: 0,
       error: null,
       run_after: new Date(),

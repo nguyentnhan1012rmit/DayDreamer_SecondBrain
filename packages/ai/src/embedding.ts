@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   DEFAULT_TUTURUUU_EMBEDDING_MODEL,
   embedTuturuuu,
@@ -47,7 +48,14 @@ export const TUTURUUU_EMBEDDING_MODEL = normalizeTuturuuuModelName(
 export interface AdvancedEmbeddingProvider extends EmbeddingProvider {
   embedDocument(text: string): Promise<number[]>;
   embedQuery(text: string): Promise<number[]>;
+  embedQueryWithMetadata(text: string): Promise<QueryEmbeddingResult>;
 }
+
+export type QueryEmbeddingResult = {
+  embedding: number[];
+  cacheStatus: "cold" | "warm" | "unknown";
+  cacheLayer: "redis" | "remote" | "local" | "in_flight" | "unknown";
+};
 
 export class TuturuuuEmbeddingProvider implements AdvancedEmbeddingProvider {
   readonly dimension = DEFAULT_EMBEDDING_DIMENSION;
@@ -67,17 +75,31 @@ export class TuturuuuEmbeddingProvider implements AdvancedEmbeddingProvider {
   }
 
   async embedQuery(text: string): Promise<number[]> {
+    return (await this.embedQueryWithMetadata(text)).embedding;
+  }
+
+  async embedQueryWithMetadata(text: string): Promise<QueryEmbeddingResult> {
     const cacheKey = text.trim().toLowerCase();
     const cached = this.queryCache.get(cacheKey);
     if (cached) {
       // Move to end (most-recently-used) by re-inserting
       this.queryCache.delete(cacheKey);
       this.queryCache.set(cacheKey, cached);
-      return cached;
+      return {
+        embedding: cached,
+        cacheStatus: "warm",
+        cacheLayer: "local",
+      };
     }
 
     const inFlight = this.queryInFlight.get(cacheKey);
-    if (inFlight) return inFlight;
+    if (inFlight) {
+      return {
+        embedding: await inFlight,
+        cacheStatus: "warm",
+        cacheLayer: "in_flight",
+      };
+    }
 
     const embeddingPromise = this.embed(text, "RETRIEVAL_QUERY");
     this.queryInFlight.set(cacheKey, embeddingPromise);
@@ -95,7 +117,11 @@ export class TuturuuuEmbeddingProvider implements AdvancedEmbeddingProvider {
       if (oldest !== undefined) this.queryCache.delete(oldest);
     }
     this.queryCache.set(cacheKey, embedding);
-    return embedding;
+    return {
+      embedding,
+      cacheStatus: "cold",
+      cacheLayer: "remote",
+    };
   }
 
   async embed(
@@ -106,12 +132,14 @@ export class TuturuuuEmbeddingProvider implements AdvancedEmbeddingProvider {
       throw new Error("Cannot embed empty text.");
     }
 
+    const idempotencyKey = randomUUID();
     const result = await retry(async () => {
       void taskType;
       return embedTuturuuu({
         input: text,
         model: TUTURUUU_EMBEDDING_MODEL,
         dimensions: DEFAULT_EMBEDDING_DIMENSION,
+        idempotencyKey,
       });
     });
 

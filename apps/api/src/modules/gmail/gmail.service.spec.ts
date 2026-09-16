@@ -138,6 +138,39 @@ describe('GmailService error handling', () => {
 
     expect(normalized.body).toBe('Hello');
   });
+
+  it('paginates Gmail History and separates additions from deletions', async () => {
+    const list = jest.fn()
+      .mockResolvedValueOnce({
+        data: {
+          history: [{ messagesAdded: [{ message: { id: 'added-1' } }] }],
+          nextPageToken: 'page-2',
+          historyId: '101',
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          history: [
+            { messagesAdded: [{ message: { id: 'added-2' } }] },
+            { messagesDeleted: [{ message: { id: 'added-1' } }] },
+          ],
+          historyId: '102',
+        },
+      });
+
+    const result = await (service as any).listGmailHistory(
+      { users: { history: { list } } },
+      '100',
+      50,
+    );
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      messageIds: ['added-2'],
+      deletedMessageIds: ['added-1'],
+      historyId: '102',
+    });
+  });
 });
 
 function restoreOptionalEnv(name: string, value: string | undefined) {

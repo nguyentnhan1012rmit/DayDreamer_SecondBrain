@@ -12,16 +12,22 @@ import { useAuth } from "@/contexts/AuthContext";
 import { MOOD_META } from "@/lib/mood-meta";
 import {
   deleteDiaryEntry,
-  getDiaryAttachmentContent,
   getDiaryEntries,
-  processDiaryAttachment,
+  getDiaryStatistics,
   updateDiaryEntry,
   type DiaryEntry,
+  type DiaryStatistics,
   type UpdateDiaryPayload,
-} from "@/lib/api-client";
+} from "@/lib/api/diary-api";
+import {
+  getDiaryAttachmentContent,
+  processDiaryAttachment,
+} from "@/lib/api/attachment-api";
 import { TimelineList } from "./timeline-list";
+import { recordClientPerformance } from "@/lib/client-performance";
 
 type LoadState = "idle" | "loading" | "success" | "error";
+const TIMELINE_PAGE_SIZE = 25;
 
 const MOOD_BAR_CLASS = {
   great: "bg-cyan-500",
@@ -57,7 +63,16 @@ function SkeletonCards() {
 const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
 function getEntryActivityDate(entry: DiaryEntry, isAdmin: boolean) {
-  return isAdmin ? (entry.entryDate ?? entry.createdAt) : entry.createdAt;
+  void isAdmin;
+  return entry.entryDate ?? entry.createdAt;
+}
+
+function getLocalDayRange(dateKey: string) {
+  const start = new Date(`${dateKey}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  end.setMilliseconds(end.getMilliseconds() - 1);
+  return { start, end };
 }
 
 function getLocalDateKey(value: string | Date) {
@@ -200,17 +215,53 @@ export function TimelineContainer() {
   const [state, setState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [statistics, setStatistics] = useState<DiaryStatistics | null>(null);
 
   const fetchEntries = useCallback(
-    async (silent = false) => {
+    async ({
+      silent = false,
+      cursor = null,
+      append = false,
+    }: {
+      silent?: boolean;
+      cursor?: string | null;
+      append?: boolean;
+    } = {}) => {
       if (!silent) {
         setState("loading");
         setErrorMessage("");
       }
       try {
         const accessToken = getAccessToken();
-        const data = await getDiaryEntries(accessToken);
-        setEntries(data);
+        const range = selectedDate ? getLocalDayRange(selectedDate) : null;
+        const data = await getDiaryEntries(accessToken, {
+          limit: TIMELINE_PAGE_SIZE,
+          cursor,
+          ...(range ? { startDate: range.start, endDate: range.end } : {}),
+        });
+        setEntries((current) => {
+          if (append) {
+            const ids = new Set(current.map((entry) => entry.id));
+            return [
+              ...current,
+              ...data.entries.filter((entry) => !ids.has(entry.id)),
+            ];
+          }
+          if (silent && current.length > TIMELINE_PAGE_SIZE) {
+            const refreshed = new Map(
+              data.entries.map((entry) => [entry.id, entry]),
+            );
+            return current.map((entry) => refreshed.get(entry.id) ?? entry);
+          }
+          return data.entries;
+        });
+        if (!silent || append) {
+          setNextCursor(data.nextCursor);
+          setHasMore(data.hasMore);
+        }
         setState("success");
       } catch (error) {
         if (!silent) {
@@ -221,18 +272,44 @@ export function TimelineContainer() {
         }
       }
     },
-    [getAccessToken],
+    [getAccessToken, selectedDate],
   );
+
+  const fetchStatistics = useCallback(async () => {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const startedAt = performance.now();
+    try {
+      const data = await getDiaryStatistics(getAccessToken(), {
+        period: "yearly",
+        anchor: new Date(),
+        timeZone,
+      });
+      setStatistics(data);
+    } finally {
+      recordClientPerformance(
+        "yearly.network",
+        performance.now() - startedAt,
+      );
+    }
+  }, [getAccessToken]);
 
   useEffect(() => {
     if (authLoading) return;
     if (!isAuthenticated) {
       setEntries([]);
+      setStatistics(null);
       setState("idle");
       return;
     }
-    fetchEntries();
+    void fetchEntries();
   }, [isAuthenticated, authLoading, fetchEntries]);
+
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+    void fetchStatistics().catch(() => {
+      // Timeline entries own the primary loading state; statistics can retry later.
+    });
+  }, [isAuthenticated, authLoading, fetchStatistics]);
 
   const handleUpdate = useCallback(
     async (id: string, payload: UpdateDiaryPayload) => {
@@ -241,8 +318,9 @@ export function TimelineContainer() {
       setEntries((prev) =>
         prev.map((e) => (e.id === id ? { ...e, ...updated } : e)),
       );
+      void fetchStatistics();
     },
-    [getAccessToken],
+    [fetchStatistics, getAccessToken],
   );
 
   const handleDelete = useCallback(
@@ -250,8 +328,9 @@ export function TimelineContainer() {
       const accessToken = getAccessToken();
       await deleteDiaryEntry(id, accessToken);
       setEntries((prev) => prev.filter((e) => e.id !== id));
+      void fetchStatistics();
     },
-    [getAccessToken],
+    [fetchStatistics, getAccessToken],
   );
 
   const handleLoadAttachmentAudio = useCallback(
@@ -261,10 +340,17 @@ export function TimelineContainer() {
     [getAccessToken],
   );
 
+  const handleOpenAttachment = useCallback(
+    async (attachmentId: string) => {
+      return getDiaryAttachmentContent(attachmentId, getAccessToken());
+    },
+    [getAccessToken],
+  );
+
   const handleProcessAttachment = useCallback(
     async (attachmentId: string) => {
       await processDiaryAttachment(attachmentId, getAccessToken());
-      await fetchEntries(true);
+      await fetchEntries({ silent: true });
     },
     [fetchEntries, getAccessToken],
   );
@@ -285,7 +371,10 @@ export function TimelineContainer() {
 
   useEffect(() => {
     if (!isAuthenticated || !hasActiveAttachmentJobs) return;
-    const interval = window.setInterval(() => void fetchEntries(true), 5000);
+    const interval = window.setInterval(
+      () => void fetchEntries({ silent: true }),
+      5000,
+    );
     return () => window.clearInterval(interval);
   }, [fetchEntries, hasActiveAttachmentJobs, isAuthenticated]);
 
@@ -299,6 +388,9 @@ export function TimelineContainer() {
 
   // Build set of date keys that have entries
   const entryDates = useMemo(() => {
+    if (statistics) {
+      return new Set(statistics.days.map((day) => day.date));
+    }
     const set = new Set<string>();
     for (const e of entries) {
       set.add(getLocalDateKey(getEntryActivityDate(e, isAdmin)));
@@ -306,20 +398,18 @@ export function TimelineContainer() {
     return set;
   }, [entries, isAdmin]);
 
-  // Filter entries by selected date
-  const filteredEntries = useMemo(() => {
-    if (!selectedDate) return sortedEntries;
-    return sortedEntries.filter(
-      (e) => getLocalDateKey(getEntryActivityDate(e, isAdmin)) === selectedDate,
-    );
-  }, [isAdmin, selectedDate, sortedEntries]);
+  const selectedDayCount = selectedDate
+    ? (statistics?.days.find((day) => day.date === selectedDate)?.entryCount ??
+      entries.length)
+    : statistics?.totalEntries;
 
   const moodStats = useMemo(() => {
+    if (statistics) return statistics.moodCounts;
     return entries.reduce<Record<string, number>>((counts, entry) => {
       if (entry.mood) counts[entry.mood] = (counts[entry.mood] ?? 0) + 1;
       return counts;
     }, {});
-  }, [entries]);
+  }, [entries, statistics]);
 
   const dominantMood = useMemo(() => {
     const mood = (["great", "good", "neutral", "bad"] as const)
@@ -330,6 +420,9 @@ export function TimelineContainer() {
   }, [moodStats]);
 
   const topTags = useMemo(() => {
+    if (statistics) {
+      return statistics.topTags.map(({ tag, count }) => [tag, count] as const);
+    }
     const counts = new Map<string, number>();
     for (const entry of entries) {
       for (const tag of entry.tags ?? []) {
@@ -340,7 +433,17 @@ export function TimelineContainer() {
     return Array.from(counts.entries())
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, 8);
-  }, [entries]);
+  }, [entries, statistics]);
+
+  const loadMore = useCallback(async () => {
+    if (!nextCursor || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      await fetchEntries({ cursor: nextCursor, append: true, silent: true });
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [fetchEntries, isLoadingMore, nextCursor]);
 
   if (authLoading) {
     return <SkeletonCards />;
@@ -431,17 +534,22 @@ export function TimelineContainer() {
                 )}
               </span>
               <span className="ml-1 text-xs text-pink-500 dark:text-pink-400">
-                ({filteredEntries.length})
+                ({selectedDayCount ?? entries.length})
               </span>
             </div>
           )}
           <TimelineList
             key={selectedDate ?? "all"}
-            entries={filteredEntries}
+            entries={sortedEntries}
             onUpdate={handleUpdate}
             onDelete={handleDelete}
             onLoadAttachmentAudio={handleLoadAttachmentAudio}
+            onOpenAttachment={handleOpenAttachment}
             onProcessAttachment={handleProcessAttachment}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            totalEntries={selectedDayCount}
+            onLoadMore={() => void loadMore()}
             isAdmin={isAdmin}
           />
         </div>
@@ -460,7 +568,7 @@ export function TimelineContainer() {
               <div className="mt-2 grid grid-cols-2 gap-3">
                 <div className="text-center">
                   <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                    {entries.length}
+                    {statistics?.totalEntries ?? entries.length}
                   </p>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
                     Entries
@@ -468,7 +576,7 @@ export function TimelineContainer() {
                 </div>
                 <div className="text-center">
                   <p className="text-xl font-bold text-slate-900 dark:text-slate-100">
-                    {entryDates.size}
+                    {statistics?.activeDays ?? entryDates.size}
                   </p>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
                     Active days
@@ -488,8 +596,10 @@ export function TimelineContainer() {
               <div className="mt-3 space-y-2">
                 {(["great", "good", "neutral", "bad"] as const).map((mood) => {
                   const count = moodStats[mood] ?? 0;
-                  const width = entries.length
-                    ? Math.round((count / entries.length) * 100)
+                  const statisticsEntryCount =
+                    statistics?.totalEntries ?? entries.length;
+                  const width = statisticsEntryCount
+                    ? Math.round((count / statisticsEntryCount) * 100)
                     : 0;
                   const MoodIcon = MOOD_META[mood].icon;
                   return (

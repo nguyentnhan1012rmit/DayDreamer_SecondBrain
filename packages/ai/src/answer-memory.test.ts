@@ -82,6 +82,7 @@ test("inferRetrievalFilters narrows recent questions to the last 60 days", () =>
   assert.ok(filters.endDate instanceof Date);
   assert.equal(filters.endDate.toISOString(), "2026-07-13T23:59:59.999Z");
   assert.equal(filters.allowTemporalFallback, true);
+  assert.equal(filters.fallbackToLatest, true);
 });
 
 test("inferRetrievalFilters treats latest memory questions as recent ranges", () => {
@@ -753,6 +754,231 @@ test("answerFromChunks accepts Vietnamese answers grounded by English citation c
   assert.equal(result.modelError, undefined);
   assert.equal(result.citations.length, 1);
   assert.match(result.answer, /căng thẳng/);
+});
+
+test("answerFromChunks accepts a Vietnamese synthesis of English weekly activity evidence", async () => {
+  const result = await answerFromChunks(
+    "What did I work on recently?",
+    [
+      makeHit({
+        id: "weekly-capstone",
+        sourceType: "summary",
+        sourceId: "summary-1",
+        chunkType: "reflection",
+        text: "On July 1st, time was spent at home working on the capstone project. Later, there was a meeting with Nhân. Work was completed on the capstone project on July 1st.",
+        evidence: "On July 1st, time was spent at home working on the capstone project. Later, there was a meeting with Nhân.",
+        similarity: 0.82,
+        vectorSimilarity: 0.82,
+        occurredAt: new Date("2026-06-29T00:00:00.000Z"),
+      }),
+      makeHit({
+        id: "weekly-drive",
+        sourceType: "summary",
+        sourceId: "summary-2",
+        chunkType: "reflection",
+        text: "On July 3rd, a Google Drive document with job descriptions for tea-room and event-organizer roles was accessed.",
+        evidence: "On July 3rd, a Google Drive document with job descriptions was accessed.",
+        similarity: 0.81,
+        vectorSimilarity: 0.81,
+        occurredAt: new Date("2026-06-29T00:00:00.000Z"),
+      }),
+    ],
+    {
+      answerStrategy: "deep",
+      responseLanguage: "vi",
+      generateAnswer: async (options: any) => ({
+        data: options.validator.parse({
+          answer: "Công việc chính:\n- Ngày 1 tháng 7, bạn làm dự án capstone ở nhà, sau đó gặp Nhân và đã hoàn thành phần việc này.\n- Ngày 3 tháng 7, bạn xem tài liệu mô tả công việc trên Google Drive.",
+          confidence: "medium",
+          citations: [
+            {
+              marker: "S1",
+              claim: "time was spent at home working on the capstone project. Later, there was a meeting with Nhân",
+            },
+            {
+              marker: "S2",
+              claim: "a Google Drive document with job descriptions was accessed",
+            },
+          ],
+        }),
+        tokenUsage: {
+          promptTokens: 120,
+          completionTokens: 55,
+          totalTokens: 175,
+          model: "test-model",
+        },
+      }),
+    },
+  );
+
+  assert.equal(result.answerMode, "tuturuuu");
+  assert.equal(result.modelError, undefined);
+  assert.equal(result.citations.length, 2);
+  assert.match(result.answer, /capstone/);
+  assert.match(result.answer, /Google Drive/);
+});
+
+test("answerFromChunks accepts a detailed Vietnamese Deep answer grounded in English activity citations", async () => {
+  const sources = [
+    makeHit({
+      id: "calendar-sync",
+      sourceType: "calendar",
+      sourceId: "calendar-sync",
+      chunkType: "event",
+      text: "Thang synced Google Calendar events into the database and started the diary-to-calendar linking job. The calendar demo event was called Capstone Mentor Review.",
+      evidence: "Thang synced Google Calendar events into the database and started the diary-to-calendar linking job. The calendar demo event was called Capstone Mentor Review.",
+      similarity: 1,
+      vectorSimilarity: 1,
+    }),
+    makeHit({
+      id: "attachment-text",
+      sourceId: "attachment-text",
+      chunkType: "action_item",
+      text: "Thang suggested that attachments should keep extracted_text so PDFs can become searchable later.",
+      evidence: "Thang suggested that attachments should keep extracted_text so PDFs can become searchable later.",
+      similarity: 1,
+      vectorSimilarity: 1,
+    }),
+    makeHit({
+      id: "summary-page",
+      sourceId: "summary-page",
+      chunkType: "action_item",
+      text: "We still need a summary page for daily and weekly reviews.",
+      evidence: "We still need a summary page for daily and weekly reviews.",
+      similarity: 1,
+      vectorSimilarity: 1,
+    }),
+    makeHit({
+      id: "api-review",
+      sourceType: "calendar",
+      sourceId: "api-review",
+      chunkType: "event",
+      text: "Quan reviews diary CRUD, upload attachment response, auth ownership, and summary API contract.",
+      evidence: "Quan reviews diary CRUD, upload attachment response, auth ownership, and summary API contract.",
+      similarity: 0.99,
+      vectorSimilarity: 0.99,
+    }),
+  ];
+
+  const result = await answerFromChunks(
+    "What did I work on recently?",
+    sources,
+    {
+      answerStrategy: "deep",
+      responseLanguage: "vi",
+      generateAnswer: async (options: any) => ({
+        data: options.validator.parse({
+          answer: "Gần đây, bạn tập trung tích hợp Google Calendar vào cơ sở dữ liệu và liên kết nhật ký với lịch. Bạn cũng đề xuất lưu extracted_text cho tệp đính kèm để PDF có thể tìm kiếm, đồng thời xác định nhu cầu xây dựng trang tóm tắt cho các đánh giá hằng ngày và hằng tuần. Ngoài ra, Quan đã rà soát CRUD nhật ký, phản hồi tải tệp, quyền sở hữu xác thực và hợp đồng API tóm tắt.",
+          confidence: "high",
+          citations: sources.map((source, index) => ({
+            marker: `S${index + 1}`,
+            claim: source.evidence ?? source.text,
+          })),
+        }),
+        tokenUsage: {
+          promptTokens: 500,
+          completionTokens: 152,
+          totalTokens: 652,
+          model: "test-model",
+        },
+      }),
+    },
+  );
+
+  assert.equal(result.answerMode, "tuturuuu");
+  assert.equal(result.modelError, undefined);
+  assert.match(result.answer, /Google Calendar/);
+  assert.match(result.answer, /Quan/);
+});
+
+test("answerFromChunks validates Deep names against every source provided to the model", async () => {
+  const sources = [
+    makeHit({
+      id: "movie",
+      sourceId: "movie",
+      text: "I went to meet Nhã and Hà to watch a movie in the evening.",
+      evidence: "I went to meet Nhã and Hà to watch a movie in the evening.",
+      similarity: 1,
+      vectorSimilarity: 1,
+    }),
+    makeHit({
+      id: "api-review",
+      sourceType: "calendar",
+      sourceId: "api-review",
+      text: "Quan reviews diary CRUD, upload attachment response, auth ownership, and summary API contract.",
+      evidence: "Quan reviews diary CRUD, upload attachment response, auth ownership, and summary API contract.",
+      similarity: 1,
+      vectorSimilarity: 1,
+    }),
+    makeHit({
+      id: "summary-page",
+      sourceId: "summary-page",
+      text: "We still need a summary page for daily and weekly reviews.",
+      evidence: "We still need a summary page for daily and weekly reviews.",
+      similarity: 1,
+      vectorSimilarity: 1,
+    }),
+    makeHit({
+      id: "rehearsal",
+      sourceType: "calendar",
+      sourceId: "rehearsal",
+      text: "Run create diary, search memory, citations, calendar context, and weekly reflection flow.",
+      evidence: "Run create diary, search memory, citations, calendar context, and weekly reflection flow.",
+      similarity: 1,
+      vectorSimilarity: 1,
+    }),
+    makeHit({
+      id: "mentor-review",
+      sourceType: "calendar",
+      sourceId: "mentor-review",
+      text: "Review prototype progress, citation UI, Google Calendar integration, and demo readiness with mentor Linh.",
+      evidence: "Review prototype progress, citation UI, Google Calendar integration, and demo readiness with mentor Linh.",
+      similarity: 0.99,
+      vectorSimilarity: 0.99,
+    }),
+    makeHit({
+      id: "kickoff",
+      sourceId: "kickoff",
+      text: "I joined the capstone kickoff meeting with Tâm, Quan, Đức Anh, Thang, and Nhân.",
+      evidence: "I joined the capstone kickoff meeting with Tâm, Quan, Đức Anh, Thang, and Nhân.",
+      similarity: 0.98,
+      vectorSimilarity: 0.98,
+    }),
+  ];
+
+  const result = await answerFromChunks(
+    "What did I work on recently?",
+    sources,
+    {
+      answerStrategy: "deep",
+      responseLanguage: "en",
+      generateAnswer: async (options: any) => ({
+        data: options.validator.parse({
+          answer: "Quan reviewed diary CRUD, upload attachment responses, auth ownership, and the summary API contract. You met Nhã and Hà to watch a movie. Mentor Linh joined Tâm and Đức Anh for the capstone review.",
+          confidence: "high",
+          citations: sources.slice(0, 4).map((source, index) => ({
+            marker: `S${index + 1}`,
+            claim: source.evidence ?? source.text,
+          })),
+        }),
+        tokenUsage: {
+          promptTokens: 500,
+          completionTokens: 128,
+          totalTokens: 628,
+          model: "test-model",
+        },
+      }),
+    },
+  );
+
+  assert.equal(
+    result.answerMode,
+    "tuturuuu",
+    result.modelError?.message ?? result.answer,
+  );
+  assert.equal(result.modelError, undefined);
+  assert.match(result.answer, /Linh/);
+  assert.match(result.answer, /Đức Anh/);
 });
 
 test("deep prompt treats Gmail Drive and attachment content as untrusted evidence", async () => {
@@ -2725,6 +2951,162 @@ test("answerMemory answers single-day questions from unindexed diary rows withou
   assert.equal(result.debugTrace?.routingTrace?.usedUnindexedDiary, true);
   assert.match(result.answer, /Dung và Lâm/);
   assert.equal(result.citations[0]?.sourceId, "diary-today");
+});
+
+test("answerMemory routes exact-date indexed questions through SQL before embedding", async () => {
+  let embeddingCalls = 0;
+  let lexicalCalls = 0;
+  const hit = makeHit({
+    id: "chunk-exact-date",
+    sourceId: "diary-exact-date",
+    text: "I finished the performance dashboard and reviewed retrieval latency.",
+    occurredAt: new Date("2026-07-13T05:00:00.000Z"),
+    distance: null,
+    vectorSimilarity: 0,
+    lexicalScore: 1,
+    retrievalMode: "lexical",
+    similarity: 0.95,
+  });
+  const fakeDb = {
+    $queryRawUnsafe: async () => [],
+    $queryRaw: async () => {
+      lexicalCalls += 1;
+      return [hit];
+    },
+  };
+
+  const result = await answerMemory(
+    "What did I do on July 13, 2026?",
+    "user-1",
+    fakeDb as any,
+    {
+      answerStrategy: "fast",
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      embeddingProvider: {
+        async embedQuery() {
+          embeddingCalls += 1;
+          return [0.1, 0.2];
+        },
+      },
+    },
+  );
+
+  assert.ok(lexicalCalls >= 1);
+  assert.equal(embeddingCalls, 0);
+  assert.equal(result.answerMode, "fast_path");
+  assert.equal(result.debugTrace?.routingTrace?.selectedPath, "indexed_fast_path");
+  assert.deepEqual(result.analytics?.embeddingCache, {
+    status: "skipped",
+    layer: "none",
+  });
+  assert.equal(typeof result.analytics?.timing.rerankMs, "number");
+  assert.equal(typeof result.analytics?.timing.firstResultMs, "number");
+  assert.equal(result.analytics?.timing.fullAnswerMs, result.analytics?.timing.totalMs);
+});
+
+test("answerMemory falls back to the latest available memories when the recent window is empty", async () => {
+  let temporalCalls = 0;
+  const latestHit = makeHit({
+    id: "latest-available-diary",
+    sourceId: "diary-july-1",
+    chunkType: "action_item",
+    text: "I worked on the capstone project at home and completed the assignment.",
+    evidence: "I worked on the capstone project at home and completed the assignment.",
+    occurredAt: new Date("2026-07-01T05:00:00.000Z"),
+    distance: 0.3,
+    vectorSimilarity: 0.7,
+    lexicalScore: 0,
+    retrievalMode: "temporal",
+    similarity: 0.72,
+  });
+  const fakeDb = {
+    $queryRawUnsafe: async () => [],
+    $transaction: async (callback: (tx: any) => Promise<unknown>) =>
+      callback({
+        $executeRawUnsafe: async () => undefined,
+        $queryRaw: async () => [],
+      }),
+    $queryRaw: async () => {
+      temporalCalls += 1;
+      return temporalCalls === 1 ? [] : [latestHit];
+    },
+  };
+
+  const result = await answerMemory(
+    "What did I work on recently?",
+    "user-1",
+    fakeDb as any,
+    {
+      answerStrategy: "deep",
+      now: new Date("2026-09-06T05:00:00.000Z"),
+      embeddingProvider: {
+        async embedQuery() {
+          return [0.1, 0.2];
+        },
+      },
+      generateAnswer: async (options: any) => ({
+        data: options.validator.parse({
+          answer: "You worked on the capstone project at home and completed the assignment.",
+          confidence: "high",
+          citations: [
+            {
+              marker: "S1",
+              claim: "worked on the capstone project at home and completed the assignment",
+            },
+          ],
+        }),
+        tokenUsage: {
+          promptTokens: 80,
+          completionTokens: 20,
+          totalTokens: 100,
+          model: "test-model",
+        },
+      }),
+    },
+  );
+
+  assert.equal(temporalCalls, 2);
+  assert.notEqual(result.noMemory, true);
+  assert.equal(result.answerMode, "tuturuuu");
+  assert.equal(result.citations[0]?.sourceId, "diary-july-1");
+  assert.equal(result.debugTrace?.appliedFilters.fallbackToLatest, true);
+  assert.match(result.debugTrace?.routingTrace?.reason ?? "", /latest available memories/);
+});
+
+test("answerMemory explains an empty explicit month without borrowing another month", async () => {
+  const fakeDb = {
+    $queryRawUnsafe: async () => [],
+    $transaction: async (callback: (tx: any) => Promise<unknown>) =>
+      callback({
+        $executeRawUnsafe: async () => undefined,
+        $queryRaw: async () => [],
+      }),
+    $queryRaw: async () => [],
+  };
+
+  const result = await answerMemory(
+    "Tổng hợp tháng 6 tôi làm gì",
+    "user-1",
+    fakeDb as any,
+    {
+      responseLanguage: "vi",
+      answerStrategy: "deep",
+      now: new Date("2026-09-06T05:00:00.000Z"),
+      timeZone: "Asia/Ho_Chi_Minh",
+      embeddingProvider: {
+        async embedQuery() {
+          return [0.1, 0.2];
+        },
+      },
+    },
+  );
+
+  assert.equal(result.answerMode, "no_memory");
+  assert.equal(result.citations.length, 0);
+  assert.equal(
+    result.answer,
+    "Không có memory nào được ghi nhận trong khoảng 01/06/2026–30/06/2026.",
+  );
 });
 
 test("inferRetrievalFilters parses relative temporal ranges", () => {

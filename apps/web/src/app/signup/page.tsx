@@ -6,7 +6,11 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { BrainLogo } from "@/components/brain-logo";
 
-function getPasswordStrength(password: string): { score: number; label: string; color: string } {
+function getPasswordStrength(password: string): {
+  score: number;
+  label: string;
+  color: string;
+} {
   let score = 0;
   if (password.length >= 6) score++;
   if (password.length >= 10) score++;
@@ -96,7 +100,11 @@ export default function SignupPage() {
     }
 
     setIsSubmitting(true);
-    const result = await signUpWithEmail(email.trim(), password, displayName.trim());
+    const result = await signUpWithEmail(
+      email.trim(),
+      password,
+      displayName.trim(),
+    );
     if (result.error) {
       setError(result.error);
     } else {
@@ -117,12 +125,32 @@ export default function SignupPage() {
             aria-label="Toggle theme"
           >
             {isDark ? (
-              <svg className="h-5 w-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+              <svg
+                className="h-5 w-5 text-amber-400"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"
+                />
               </svg>
             ) : (
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+              <svg
+                className="h-5 w-5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"
+                />
               </svg>
             )}
           </button>
@@ -151,17 +179,33 @@ export default function SignupPage() {
               /* Success state */
               <div className="py-4 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/40">
-                  <svg className="h-7 w-7 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  <svg
+                    className="h-7 w-7 text-emerald-600 dark:text-emerald-400"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                    />
                   </svg>
                 </div>
-                <h3 className="mt-4 text-lg font-bold text-slate-900 dark:text-slate-100">Check your email</h3>
+                <h3 className="mt-4 text-lg font-bold text-slate-900 dark:text-slate-100">
+                  Check your email
+                </h3>
                 <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
-                  We sent a confirmation link to <strong className="text-slate-900 dark:text-slate-200">{email}</strong>.
-                  Click the link to activate your account.
+                  We sent a confirmation link to{" "}
+                  <strong className="text-slate-900 dark:text-slate-200">
+                    {email}
+                  </strong>
+                  . Click the link to activate your account.
                 </p>
                 <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-700 dark:border-indigo-800 dark:bg-indigo-900/20 dark:text-indigo-300">
-                  <strong>Tip:</strong> If you later sign in with Google using the same email, your accounts will be automatically linked.
+                  <strong>Tip:</strong> If you later sign in with Google using
+                  the same email, your accounts will be automatically linked.
                 </div>
                 <Link
                   href="/login"
@@ -179,10 +223,22 @@ export default function SignupPage() {
                   className="action-secondary w-full"
                 >
                   <svg className="h-5 w-5" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+                    <path
+                      fill="#4285F4"
+                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                    />
                   </svg>
                   Sign up with Google
                 </button>
@@ -190,7 +246,9 @@ export default function SignupPage() {
                 {/* Divider */}
                 <div className="my-5 flex items-center gap-3">
                   <div className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
-                  <span className="text-xs font-medium text-slate-400 dark:text-slate-500">OR</span>
+                  <span className="text-xs font-medium text-slate-400 dark:text-slate-500">
+                    OR
+                  </span>
                   <div className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
                 </div>
 
@@ -211,8 +269,18 @@ export default function SignupPage() {
                             onClick={removeAvatar}
                             className="absolute -top-1 -right-1 flex h-6 w-6 cursor-pointer items-center justify-center rounded-full bg-rose-500 text-white shadow-sm transition hover:bg-rose-600"
                           >
-                            <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+                            <svg
+                              className="h-3 w-3"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={3}
+                                d="M6 18L18 6M6 6l12 12"
+                              />
                             </svg>
                           </button>
                         </div>
@@ -222,8 +290,18 @@ export default function SignupPage() {
                           onClick={() => fileInputRef.current?.click()}
                           className="flex h-20 w-20 cursor-pointer items-center justify-center rounded-full border-2 border-dashed border-slate-300 bg-slate-50 transition hover:border-indigo-400 hover:bg-indigo-50 dark:border-slate-600 dark:bg-slate-700 dark:hover:border-indigo-500 dark:hover:bg-indigo-900/20"
                         >
-                          <svg className="h-8 w-8 text-slate-400 dark:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                          <svg
+                            className="h-8 w-8 text-slate-400 dark:text-slate-500"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={1.5}
+                              d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                            />
                           </svg>
                         </button>
                       )}
@@ -248,7 +326,10 @@ export default function SignupPage() {
 
                   {/* Name (required) */}
                   <div>
-                    <label htmlFor="signup-name" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    <label
+                      htmlFor="signup-name"
+                      className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300"
+                    >
                       Full name <span className="text-rose-500">*</span>
                     </label>
                     <input
@@ -265,7 +346,10 @@ export default function SignupPage() {
 
                   {/* Email */}
                   <div>
-                    <label htmlFor="signup-email" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    <label
+                      htmlFor="signup-email"
+                      className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300"
+                    >
                       Email address <span className="text-rose-500">*</span>
                     </label>
                     <input
@@ -282,7 +366,10 @@ export default function SignupPage() {
 
                   {/* Password */}
                   <div>
-                    <label htmlFor="signup-password" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    <label
+                      htmlFor="signup-password"
+                      className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300"
+                    >
                       Password <span className="text-rose-500">*</span>
                     </label>
                     <div className="relative">
@@ -301,17 +388,44 @@ export default function SignupPage() {
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
                         className="absolute right-1 top-1/2 flex h-10 w-10 -translate-y-1/2 cursor-pointer items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-600 dark:hover:text-slate-200"
-                        aria-label={showPassword ? "Hide password" : "Show password"}
+                        aria-label={
+                          showPassword ? "Hide password" : "Show password"
+                        }
                         aria-pressed={showPassword}
                       >
                         {showPassword ? (
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                          <svg
+                            className="h-4 w-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"
+                            />
                           </svg>
                         ) : (
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          <svg
+                            className="h-4 w-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                            />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                            />
                           </svg>
                         )}
                       </button>
@@ -323,10 +437,14 @@ export default function SignupPage() {
                           <div className="h-1.5 flex-1 rounded-full bg-slate-200 dark:bg-slate-600">
                             <div
                               className={`h-1.5 rounded-full transition-all ${strength.color}`}
-                              style={{ width: `${(strength.score / 5) * 100}%` }}
+                              style={{
+                                width: `${(strength.score / 5) * 100}%`,
+                              }}
                             />
                           </div>
-                          <span className="text-xs font-medium text-slate-500 dark:text-slate-400">{strength.label}</span>
+                          <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                            {strength.label}
+                          </span>
                         </div>
                       </div>
                     )}
@@ -334,7 +452,10 @@ export default function SignupPage() {
 
                   {/* Confirm password */}
                   <div>
-                    <label htmlFor="signup-confirm" className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+                    <label
+                      htmlFor="signup-confirm"
+                      className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300"
+                    >
                       Confirm password <span className="text-rose-500">*</span>
                     </label>
                     <input
@@ -352,7 +473,9 @@ export default function SignupPage() {
                       placeholder="Re-enter your password"
                     />
                     {confirmPassword && !passwordsMatch && (
-                      <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">Passwords do not match</p>
+                      <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">
+                        Passwords do not match
+                      </p>
                     )}
                   </div>
 
@@ -373,8 +496,9 @@ export default function SignupPage() {
                   </button>
 
                   <p className="text-center text-xs text-slate-400 dark:text-slate-500">
-                    By signing up, you agree to our terms of service.
-                    If you later sign in with Google using the same email, your accounts will be linked.
+                    By signing up, you agree to our terms of service. If you
+                    later sign in with Google using the same email, your
+                    accounts will be linked.
                   </p>
                 </form>
               </>
@@ -385,7 +509,10 @@ export default function SignupPage() {
           {!signupSuccess && (
             <p className="mt-6 text-center text-sm text-slate-500 dark:text-slate-400">
               Already have an account?{" "}
-              <Link href="/login" className="font-medium text-indigo-600 transition hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300">
+              <Link
+                href="/login"
+                className="font-medium text-indigo-600 transition hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
+              >
                 Sign in
               </Link>
             </p>
