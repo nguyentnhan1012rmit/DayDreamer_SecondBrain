@@ -1,3 +1,5 @@
+<div align="center">
+
 # 🧠 Second Brain
 
 **A Personal Intelligence Platform — Not Just a Diary**
@@ -49,8 +51,13 @@ _Transform unstructured thoughts into structured, retrievable memory with AI-pow
    │ Supabase │            │ PostgreSQL       │
    │  Auth    │            │ + pgvector ext   │
    └──────────┘            └──────────────────┘
-                                     │
-                                     ▼
+         │                           │
+         │                 ┌──────────────────┐
+         │                 │ Redis (Cache &   │
+         │                 │  Rate Limits)    │
+         │                 └──────────────────┘
+         │                           │
+         ▼                           ▼
                            ┌──────────────────┐
                            │  AI Gateway      │
                            │  (Embeddings +   │
@@ -217,6 +224,7 @@ INDEXING_LISTENER_RECONNECT_MAX_MS="60000"             # optional; reconnect bac
 
 # ── Redis rate limit and AI query cache ──────────────────
 REDIS_URL="redis://localhost:6379"
+RATE_LIMIT_REDIS_REQUIRED="true"                        # optional; set to false to use in-memory rate limiting if Redis is unavailable
 QUERY_EMBEDDING_REDIS_CACHE_ENABLED="true"              # optional; shared cache across API instances
 QUERY_EMBEDDING_CACHE_TTL_SECONDS="604800"               # optional; seven days
 
@@ -303,6 +311,17 @@ pnpm docker:down
 ```
 
 Compose overrides `DATABASE_URL`, `DIRECT_URL`, and `REDIS_URL` to use the local containers, while your Supabase/Tuturuuu/Google secrets still come from `.env`.
+
+### Deployment
+
+This project is designed to be deployed across modern cloud providers:
+
+- **Frontend (`apps/web`)**: Deploy to [Vercel](https://vercel.com/) or Netlify for seamless Next.js hosting.
+- **Backend API (`apps/api`) & Worker (`apps/worker`)**: Deploy as Node.js web services and background workers on platforms like [Render](https://render.com/) or Railway.
+- **Database & Auth**: Hosted on [Supabase](https://supabase.com/) (provides Postgres with `pgvector` and Auth).
+- **Caching**: Use a managed Redis instance (e.g., Upstash or Render Redis) and set `REDIS_URL`. If Redis is unavailable in your environment, set `RATE_LIMIT_REDIS_REQUIRED="false"` to fall back to in-memory rate limiting.
+
+Ensure all environment variables from `.env` and `.env.local` are securely configured in your deployment platform's environment settings.
 
 ### Useful Scripts
 

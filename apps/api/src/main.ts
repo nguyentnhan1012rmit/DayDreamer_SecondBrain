@@ -34,6 +34,11 @@ async function bootstrap() {
   configureTrustProxy(app, logger);
 
   app.setGlobalPrefix('api');
+
+  // explicit route for Render health checks (since global prefix is 'api')
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.get('/', (req: any, res: any) => res.status(200).send('OK'));
+  expressApp.head('/', (req: any, res: any) => res.status(200).end());
   
   app.enableCors({
     origin: getCorsOrigins(),

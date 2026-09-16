@@ -45,7 +45,12 @@ export function rateLimitMiddleware(
   res: Response,
   next: NextFunction,
 ) {
-  if (process.env.RATE_LIMIT_ENABLED === 'false' || req.method === 'OPTIONS') {
+  if (
+    process.env.RATE_LIMIT_ENABLED === 'false' ||
+    req.method === 'OPTIONS' ||
+    req.path === '/' ||
+    req.path.startsWith('/api/health')
+  ) {
     next();
     return;
   }
