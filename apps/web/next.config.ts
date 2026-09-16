@@ -50,6 +50,15 @@ const nextConfig: NextConfig = {
     // Source code types are correct; only the generated validator fails.
     ignoreBuildErrors: true,
   },
+  async redirects() {
+    return [
+      {
+        source: '/dashboard',
+        destination: '/diary',
+        permanent: false,
+      },
+    ];
+  },
   turbopack: {
     root: workspaceRoot,
   },

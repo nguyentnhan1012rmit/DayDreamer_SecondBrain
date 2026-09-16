@@ -158,8 +158,8 @@ export default function SignupPage() {
       </header>
 
       {/* Main content */}
-      <div className="flex flex-1 items-center justify-center px-4 py-12">
-        <div className="w-full max-w-md">
+      <div className="flex flex-1 justify-center px-4 py-12">
+        <div className="my-auto w-full max-w-md">
           {/* Logo & title */}
           <div className="mb-8 text-center">
             <div className="flex justify-center">
