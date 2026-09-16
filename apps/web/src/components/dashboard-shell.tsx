@@ -138,7 +138,7 @@ export function DashboardShell({
   title,
   description,
 }: DashboardShellProps) {
-  const { user, isAuthenticated, isLoading, signOut } = useAuth();
+  const { user, isAuthenticated, isLoading, signOut, isAdmin } = useAuth();
   const pathname = usePathname();
   const [openMenu, setOpenMenu] = useState<"settings" | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -416,7 +416,7 @@ export function DashboardShell({
           </nav>
 
           {/* Token Usage Widget (Order 2: 3d) */}
-          {tokenStats && (
+          {tokenStats && isAdmin && (
             <div
               className={`mx-3 mb-3 enterprise-panel p-3 ${sidebarCollapsed ? "lg:hidden" : ""}`}
             >

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Laptop, Moon, Sun } from "lucide-react";
 import { useTheme } from "@/contexts/ThemeContext";
+import { useAuth } from "@/contexts/AuthContext";
 
 type TokenStats = { today: number; week: number; month: number; queriesToday: number };
 
@@ -28,6 +29,7 @@ function readTokenStats(): TokenStats {
 
 export function PreferencesSettingsTab() {
   const { theme, setTheme } = useTheme();
+  const { isAdmin } = useAuth();
   const [language, setLanguage] = useState<"en" | "vi">("en");
   const [stats, setStats] = useState<TokenStats>({ today: 0, week: 0, month: 0, queriesToday: 0 });
 
@@ -61,16 +63,18 @@ export function PreferencesSettingsTab() {
         </div>
       </section>
 
-      <section className="enterprise-card p-5">
-        <Heading eyebrow="Usage" title="AI Token Usage" />
-        <div className="mt-5 grid gap-3 sm:grid-cols-4">
-          <Stat label="Today" value={stats.today} suffix="tokens" />
-          <Stat label="This week" value={stats.week} suffix="tokens" />
-          <Stat label="This month" value={stats.month} suffix="tokens" />
-          <Stat label="Queries today" value={stats.queriesToday} suffix="searches" />
-        </div>
-        <button type="button" onClick={() => { localStorage.removeItem("dd-token-usage"); setStats({ today: 0, week: 0, month: 0, queriesToday: 0 }); }} className="action-secondary mt-4">Clear usage history</button>
-      </section>
+      {isAdmin && (
+        <section className="enterprise-card p-5">
+          <Heading eyebrow="Usage" title="AI Token Usage" />
+          <div className="mt-5 grid gap-3 sm:grid-cols-4">
+            <Stat label="Today" value={stats.today} suffix="tokens" />
+            <Stat label="This week" value={stats.week} suffix="tokens" />
+            <Stat label="This month" value={stats.month} suffix="tokens" />
+            <Stat label="Queries today" value={stats.queriesToday} suffix="searches" />
+          </div>
+          <button type="button" onClick={() => { localStorage.removeItem("dd-token-usage"); setStats({ today: 0, week: 0, month: 0, queriesToday: 0 }); }} className="action-secondary mt-4">Clear usage history</button>
+        </section>
+      )}
     </div>
   );
 }
