@@ -250,7 +250,7 @@ function isRedisRequiredForRateLimit() {
   const configured = process.env.RATE_LIMIT_REDIS_REQUIRED;
   if (configured === 'true') return true;
   if (configured === 'false') return false;
-  return process.env.NODE_ENV === 'production';
+  return process.env.NODE_ENV === 'production' && !!process.env.REDIS_URL;
 }
 
 function shouldTrustProxyHeaders() {
